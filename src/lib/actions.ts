@@ -10418,9 +10418,11 @@ export async function saveVrijeDag(formData: FormData) {
   const { rol, eigenMedewerkerId } = await getRolEnEigenMedewerker(supabase, adminId)
 
   const id = formData.get('id') as string
-  // Medewerkers mogen alleen voor zichzelf aanvragen; admin kiest de medewerker.
+  // Alleen rol 'admin' beheert vrije dagen; 'gebruiker' en 'medewerker' mogen
+  // uitsluitend voor zichzelf AANVRAGEN (status 'aangevraagd').
+  const isBeheerder = rol === 'admin'
   let medewerkerId = (formData.get('medewerker_id') as string) || null
-  if (rol === 'medewerker') {
+  if (!isBeheerder) {
     if (!eigenMedewerkerId) return { error: 'Geen medewerker-profiel aan je account gekoppeld' }
     medewerkerId = eigenMedewerkerId
   }
@@ -10430,8 +10432,8 @@ export async function saveVrijeDag(formData: FormData) {
   if (!start) return { error: 'Startdatum is verplicht' }
   const eind = (formData.get('eind_datum') as string) || start
   const urenRaw = formData.get('aantal_uren') as string
-  // Admin mag direct goedkeuren; een medewerker-aanvraag start op 'aangevraagd'.
-  const directGoedkeuren = rol !== 'medewerker' && formData.get('direct_goedkeuren') === 'true'
+  // Alleen de beheerder mag direct goedkeuren; anders start op 'aangevraagd'.
+  const directGoedkeuren = isBeheerder && formData.get('direct_goedkeuren') === 'true'
   const record = {
     administratie_id: adminId,
     medewerker_id: medewerkerId,
@@ -10445,8 +10447,8 @@ export async function saveVrijeDag(formData: FormData) {
 
   if (id) {
     // Wijzigen van bestaande vrije dagen is voorbehouden aan de beheerder —
-    // medewerkers kunnen alleen nieuwe aanvragen indienen (status 'aangevraagd').
-    if (rol === 'medewerker') return { error: 'Alleen een beheerder kan vrije dagen wijzigen' }
+    // anderen kunnen alleen nieuwe aanvragen indienen (status 'aangevraagd').
+    if (!isBeheerder) return { error: 'Alleen een beheerder kan vrije dagen wijzigen' }
     const { error } = await supabase.from('vrije_dagen').update(record).eq('id', id).eq('administratie_id', adminId)
     if (error) return { error: error.message }
   } else {
@@ -10463,7 +10465,7 @@ export async function beoordeelVrijeDag(id: string, status: 'goedgekeurd' | 'afg
   const adminId = await getAdministratieId()
   if (!adminId) return { error: 'Niet ingelogd' }
   const { userId, rol } = await getRolEnEigenMedewerker(supabase, adminId)
-  if (rol === 'medewerker') return { error: 'Alleen een beheerder kan goedkeuren' }
+  if (rol !== 'admin') return { error: 'Alleen een beheerder kan goedkeuren' }
   const { error } = await supabase
     .from('vrije_dagen')
     .update({ status, beoordeeld_op: new Date().toISOString(), beoordeeld_door: userId })
@@ -10480,8 +10482,8 @@ export async function deleteVrijeDag(id: string) {
   const adminId = await getAdministratieId()
   if (!adminId) return { error: 'Niet ingelogd' }
   const { rol, eigenMedewerkerId } = await getRolEnEigenMedewerker(supabase, adminId)
-  if (rol === 'medewerker') {
-    // Medewerkers mogen alleen een EIGEN, nog niet beoordeelde aanvraag intrekken.
+  if (rol !== 'admin') {
+    // Niet-beheerders mogen alleen een EIGEN, nog niet beoordeelde aanvraag intrekken.
     const { data: vd } = await supabase
       .from('vrije_dagen')
       .select('medewerker_id, status')
@@ -10548,7 +10550,7 @@ export async function stuurVakantieVooraankondiging(vrijeDagId: string) {
   const adminId = await getAdministratieId()
   if (!adminId) return { error: 'Niet ingelogd' }
   const { rol } = await getRolEnEigenMedewerker(supabase, adminId)
-  if (rol === 'medewerker') return { error: 'Alleen een beheerder kan klanten informeren' }
+  if (rol !== 'admin') return { error: 'Alleen een beheerder kan klanten informeren' }
 
   const { data: vd } = await supabase
     .from('vrije_dagen')

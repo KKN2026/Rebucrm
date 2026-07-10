@@ -45,9 +45,11 @@ function dagenTussen(start: string, eind: string): number {
   return Math.max(1, Math.round((b.getTime() - a.getTime()) / 86400000) + 1)
 }
 
-export function VrijeDagenView({ items, rol, medewerkers }: { items: VrijeDag[]; rol: string; medewerkers: Medewerker[] }) {
+export function VrijeDagenView({ items, rol, eigenMedewerkerId, medewerkers }: { items: VrijeDag[]; rol: string; eigenMedewerkerId?: string | null; medewerkers: Medewerker[] }) {
   const router = useRouter()
-  const isAdmin = rol !== 'medewerker'
+  // Strikt rol 'admin': collega's met rol 'gebruiker' zijn GEEN beheerder en
+  // kunnen alleen aanvragen — de server actions handhaven dit ook.
+  const isAdmin = rol === 'admin'
   const [dialogOpen, setDialogOpen] = useState(false)
   const [bezig, setBezig] = useState(false)
   const [loadingId, setLoadingId] = useState<string | null>(null)
@@ -144,7 +146,7 @@ export function VrijeDagenView({ items, rol, medewerkers }: { items: VrijeDag[];
               </Button>
             )
           )}
-          {(isAdmin || v.status === 'aangevraagd') && (
+          {(isAdmin || (v.status === 'aangevraagd' && !!eigenMedewerkerId && v.medewerker_id === eigenMedewerkerId)) && (
             <Button size="sm" variant="ghost" disabled={loadingId === v.id} onClick={() => handleDelete(v.id)} className="text-gray-400 hover:text-red-500">
               <Trash2 className="h-4 w-4" />
             </Button>
