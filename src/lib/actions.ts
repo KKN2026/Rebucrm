@@ -1107,6 +1107,30 @@ export async function saveOfferte(formData: FormData) {
   }
   offertenummer = await ensureOffertenummer()
 
+  // Vangnet tegen dubbele losse offertes met hetzelfde nummer: bestaat het
+  // nummer al binnen deze administratie, koppel de nieuwe rij dan als volgende
+  // VERSIE aan de bestaande groep i.p.v. een tweede losstaande offerte te
+  // maken. Twee losse rijen met één nummer tellen overal dubbel mee en de
+  // versie-logica ("laatste versie per groep") ziet de nieuwe prijs anders
+  // nooit als actueel (oorzaak van de Klaas Winter-factuurverwarring 10 juli).
+  if (!id) {
+    const { data: zelfdeNummer } = await supabase
+      .from('offertes')
+      .select('id, versie_nummer, groep_id')
+      .eq('administratie_id', adminId)
+      .eq('offertenummer', offertenummer)
+      .order('versie_nummer', { ascending: false })
+      .limit(1)
+    if (zelfdeNummer && zelfdeNummer.length > 0) {
+      const bestaandeRij = zelfdeNummer[0]
+      groepId = groepId || bestaandeRij.groep_id || bestaandeRij.id
+      versieNummer = Math.max(versieNummer, (bestaandeRij.versie_nummer || 1) + 1)
+      if (!bestaandeRij.groep_id) {
+        await supabase.from('offertes').update({ groep_id: groepId }).eq('id', bestaandeRij.id)
+      }
+    }
+  }
+
   const record = {
     administratie_id: adminId,
     relatie_id: formData.get('relatie_id') as string || null,

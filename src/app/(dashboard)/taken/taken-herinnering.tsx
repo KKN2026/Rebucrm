@@ -2,10 +2,9 @@
 
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
-import { Button } from '@/components/ui/button'
 import { getMijnTakenVandaag } from '@/lib/actions'
 import { formatDateShort } from '@/lib/utils'
-import { CheckSquare, ArrowRight, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
+import { CheckSquare, AlertTriangle, ChevronDown, ChevronUp } from 'lucide-react'
 
 interface HerinnerTaak {
   id: string
@@ -18,9 +17,10 @@ interface HerinnerTaak {
 }
 
 /**
- * Taken-overzicht bovenaan het dashboard (géén popup meer). Toont de open taken
- * met een deadline vandaag of eerder (achterstallig), zodat je ze meteen op het
- * hoofdscherm ziet en kunt opvolgen. Verschijnt alleen als er zulke taken zijn.
+ * Taken-overzicht bovenaan de TAKEN-pagina (stond eerst op het dashboard).
+ * Toont de open taken met een deadline vandaag of eerder (achterstallig),
+ * zodat je ze meteen ziet en kunt opvolgen. Verschijnt alleen als er zulke
+ * taken zijn.
  */
 export function TakenHerinnering() {
   const router = useRouter()
@@ -95,11 +95,6 @@ export function TakenHerinnering() {
               )
             })}
           </ul>
-          <div className="flex justify-end pt-2">
-            <Button variant="ghost" size="sm" onClick={() => router.push('/taken')}>
-              Naar takenlijst <ArrowRight className="h-4 w-4" />
-            </Button>
-          </div>
         </div>
       )}
     </div>

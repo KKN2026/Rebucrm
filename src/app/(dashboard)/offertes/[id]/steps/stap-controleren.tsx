@@ -114,6 +114,12 @@ export function StapControleren({
   const leverancierNaam = detectedLeverancier?.display_naam || detectedLeverancier?.leverancier || ''
   const leverancierProfiel = detectedLeverancier?.profiel || ''
   const bezorgConfig = bezorgkostenRegel(leverancierNaam, leverancierProfiel)
+  // Heeft de gebruiker de bezorgkosten-regel bewust verwijderd? Dan niet
+  // opnieuw automatisch toevoegen. Bij een BESTAANDE offerte die zonder
+  // bezorgkosten is opgeslagen, respecteren we die keuze vanaf het laden.
+  const [bezorgVerwijderd, setBezorgVerwijderd] = useState<boolean>(() =>
+    !!offerte && regels.length > 0 && !regels.some(r => r.omschrijving === BEZORGKOSTEN_LABEL)
+  )
   const updateBezorgkosten = useCallback((currentRegels: Regel[]) => {
     const productTotaal = currentRegels.reduce((sum, r) => {
       const o = r.omschrijving.toLowerCase()
@@ -137,6 +143,8 @@ export function StapControleren({
 
     if (productTotaal < bezorgConfig.drempel && productTotaal > 0) {
       if (!heeftBezorgkosten) {
+        // Door de gebruiker bewust weggehaald → niet opnieuw toevoegen.
+        if (bezorgVerwijderd) return currentRegels
         return [...currentRegels, { omschrijving: BEZORGKOSTEN_LABEL, aantal: 1, prijs: bezorgConfig.bedrag, btw_percentage: 21 }]
       }
       // Alleen automatisch corrigeren als de huidige waarde nog een van de
@@ -156,7 +164,7 @@ export function StapControleren({
       }
     }
     return currentRegels
-  }, [bezorgConfig.drempel, bezorgConfig.bedrag])
+  }, [bezorgConfig.drempel, bezorgConfig.bedrag, bezorgVerwijderd])
 
   // Hash van product-regels — verandert wanneer prijzen/aantallen wijzigen,
   // zodat de bezorgkosten-update meeloopt. Bezorg/korting-regels uitgesloten
@@ -215,6 +223,9 @@ export function StapControleren({
   }
 
   function removeRegel(index: number) {
+    // Bezorgkosten handmatig verwijderd → onthouden, zodat de auto-logica ze
+    // niet meteen terugzet. Handmatig opnieuw toevoegen mag altijd.
+    if (regels[index]?.omschrijving === BEZORGKOSTEN_LABEL) setBezorgVerwijderd(true)
     onRegelsChange(regels.filter((_, i) => i !== index))
   }
 

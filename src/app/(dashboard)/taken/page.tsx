@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
 import { getTaken, getMedewerkers } from '@/lib/actions'
 import { TakenView } from './taken-view'
+import { TakenHerinnering } from './taken-herinnering'
 
 export const revalidate = 15
 
@@ -13,6 +14,7 @@ export default async function TakenPage() {
     .map((m: { id: string; naam: string; profiel_id: string | null }) => ({ id: m.id, naam: m.naam, profiel_id: m.profiel_id }))
   return (
     <Suspense>
+      <TakenHerinnering />
       <TakenView taken={taken} isAdmin={isAdmin} currentUserId={currentUserId} alleMedewerkers={alleMedewerkers} />
     </Suspense>
   )

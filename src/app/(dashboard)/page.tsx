@@ -2,7 +2,6 @@ import { getDashboardData, getMedewerkerDashboardData } from '@/lib/actions'
 import { createClient } from '@/lib/supabase/server'
 import { DashboardView } from './dashboard-view'
 import { MedewerkerDashboard } from './medewerker-dashboard'
-import { TakenHerinnering } from './taken-herinnering'
 
 export default async function DashboardPage() {
   const supabase = await createClient()
@@ -13,11 +12,12 @@ export default async function DashboardPage() {
     if (profiel?.rol) rol = profiel.rol
   }
 
+  // De 'taken vragen om opvolging'-banner staat op de taken-pagina, niet hier.
   if (rol === 'medewerker') {
     const medewerkerData = await getMedewerkerDashboardData()
-    return <><TakenHerinnering /><MedewerkerDashboard data={medewerkerData} /></>
+    return <MedewerkerDashboard data={medewerkerData} />
   }
 
   const data = await getDashboardData()
-  return <><TakenHerinnering /><DashboardView data={data} /></>
+  return <DashboardView data={data} />
 }
