@@ -521,22 +521,6 @@ export async function fetchEmailAttachments(imapUid: number, folder: string = 'I
   return attachments
 }
 
-async function matchEmailToRelatie(
-  email: string,
-  administratieId: string,
-  supabase: ReturnType<typeof createAdminClient>
-): Promise<string | null> {
-  if (!email) return null
-  const { data } = await supabase
-    .from('relaties')
-    .select('id')
-    .eq('administratie_id', administratieId)
-    .ilike('email', email)
-    .limit(1)
-    .maybeSingle()
-  return data?.id || null
-}
-
 async function matchEmailToOfferte(
   onderwerp: string | null,
   inReplyTo: string | null,
@@ -599,32 +583,14 @@ async function processNewEmail(
   // toegewezenMedewerker werd alleen gebruikt voor auto-taak aanmaak — die is
   // weggehaald. matchMedewerkerByEmail blijft staan voor evt. toekomstig gebruik.
   if (classificatie === 'offerte_aanvraag') {
-    let finalRelatieId = relatieId
-    if (!finalRelatieId) {
-      // Create new relatie for unknown sender
-      const { data: newRelatie } = await supabase
-        .from('relaties')
-        .insert({
-          administratie_id: administratieId,
-          bedrijfsnaam: email.van_naam || email.van_email,
-          email: email.van_email,
-          type: 'particulier',
-        })
-        .select('id')
-        .single()
-
-      if (newRelatie) {
-        finalRelatieId = newRelatie.id
-        await supabase
-          .from('emails')
-          .update({ relatie_id: newRelatie.id, verwerkt: true })
-          .eq('administratie_id', administratieId)
-          .eq('message_id', email.message_id)
-      }
-    } else {
+    // Geen automatische relatie-aanmaak meer. Onbekende afzenders blijven
+    // zonder gekoppelde relatie staan; een medewerker maakt zelf een klant
+    // aan vanuit de email-inbox (createRelatieFromEmail). Bestaat de relatie
+    // al, dan is hij bij de batch-insert al gekoppeld via relatie_id.
+    if (relatieId) {
       await supabase
         .from('emails')
-        .update({ verwerkt: true })
+        .update({ relatie_id: relatieId, verwerkt: true })
         .eq('administratie_id', administratieId)
         .eq('message_id', email.message_id)
     }

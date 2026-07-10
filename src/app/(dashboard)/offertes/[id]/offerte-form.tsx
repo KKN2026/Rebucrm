@@ -12,7 +12,8 @@ import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { RichTextEditor, plainTextToHtml } from '@/components/ui/rich-text-editor'
 import { formatCurrency, formatDateShort } from '@/lib/utils'
-import { Save, Trash2, ArrowLeft, Plus, X, Copy, Download, Send, Receipt, Link2, FolderKanban, Loader2, Paperclip, Mail, CheckCircle, MessageCircle, ChevronDown, ChevronRight, Upload, FileText, Percent, Building2, History, CheckSquare } from 'lucide-react'
+import { Save, Trash2, ArrowLeft, Plus, X, Copy, Download, Send, Receipt, Link2, FolderKanban, Loader2, Paperclip, CheckCircle, MessageCircle, ChevronDown, ChevronRight, Upload, FileText, Percent, Building2, History, CheckSquare } from 'lucide-react'
+import { EmailOntvangers, combineerOntvangers, type EmailContactOptie } from '@/components/ui/email-ontvangers'
 import { VersieDiffDialog } from '@/components/offerte/versie-diff-dialog'
 import { RecentTracker } from '@/components/layout/recent-tracker'
 import { EmailLogDialog } from '@/components/email-log-dialog'
@@ -395,7 +396,7 @@ export function OfferteForm({ offerte, relaties, producten, initialRelatieId, in
               offerteId={savedOfferteId}
               offerteType={offerteType}
               onBack={() => router.push(`/offertes/${savedOfferteId}`)}
-              onDone={() => router.push(isConceptWizard ? '/offertes/concepten' : '/offertes')}
+              onDone={() => router.push(`/offertes/${savedOfferteId}`)}
             />
           )}
         </div>
@@ -454,10 +455,13 @@ function EditOfferteView({
   const [selectedRelatieIdState, setSelectedRelatieIdState] = useState(initRelatieId)
   const [regels, setRegels] = useState<Regel[]>(initialRegels)
 
-  // Email state
+  // Email state — ontvangers: aan te vinken contactpersonen van de relatie +
+  // vrij veld voor losse adressen. Meerdere contactpersonen tegelijk kan.
   const [showEmailResult, setShowEmailResult] = useState<{ link?: string; message?: string } | null>(null)
   const [showEmailDialog, setShowEmailDialog] = useState(false)
-  const [emailTo, setEmailTo] = useState('')
+  const [emailContacten, setEmailContacten] = useState<EmailContactOptie[]>([])
+  const [gekozenEmails, setGekozenEmails] = useState<string[]>([])
+  const [extraEmail, setExtraEmail] = useState('')
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
   const [emailAttachments, setEmailAttachments] = useState<File[]>([])
@@ -563,7 +567,18 @@ function EditOfferteView({
     setLoading(true)
     const defaults = await getOfferteEmailDefaults(offerte.id as string)
     if (defaults.error) { setError(defaults.error); setLoading(false); return }
-    setEmailTo(defaults.to || '')
+    const opties = (defaults.contacten || []) as EmailContactOptie[]
+    setEmailContacten(opties)
+    // Voorselectie: het standaard-adres als het tussen de contacten staat,
+    // anders in het vrije veld.
+    const standaard = (defaults.to || '').trim()
+    if (standaard && opties.some(c => c.email.toLowerCase() === standaard.toLowerCase())) {
+      setGekozenEmails([opties.find(c => c.email.toLowerCase() === standaard.toLowerCase())!.email])
+      setExtraEmail('')
+    } else {
+      setGekozenEmails([])
+      setExtraEmail(standaard)
+    }
     setEmailSubject(defaults.subject || '')
     setEmailBody(plainTextToHtml(defaults.body || ''))
     setEmailAttachments([])
@@ -583,7 +598,7 @@ function EditOfferteView({
       extraBijlagen.push({ filename: file.name, content: base64 })
     }
     const result = await sendOfferteEmail(offerte.id as string, {
-      to: emailTo, subject: emailSubject, body: emailBody,
+      to: combineerOntvangers(gekozenEmails, extraEmail), subject: emailSubject, body: emailBody,
       extraBijlagen: extraBijlagen.length > 0 ? extraBijlagen : undefined,
     })
     setSending(false)
@@ -944,8 +959,13 @@ function EditOfferteView({
       <Dialog open={showEmailDialog} onClose={() => setShowEmailDialog(false)} title="Offerte versturen" className="max-w-2xl">
         <div className="space-y-4">
           <div>
-            <label htmlFor="email_to" className="block text-sm font-medium text-gray-700 mb-1"><Mail className="h-3.5 w-3.5 inline mr-1" />Aan</label>
-            <input id="email_to" type="email" value={emailTo} onChange={e => setEmailTo(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="E-mailadres ontvanger" />
+            <EmailOntvangers
+              contacten={emailContacten}
+              geselecteerd={gekozenEmails}
+              onToggle={email => setGekozenEmails(prev => prev.includes(email) ? prev.filter(e => e !== email) : [...prev, email])}
+              extra={extraEmail}
+              onExtraChange={setExtraEmail}
+            />
             <p className="text-xs text-gray-400 mt-1">Pas het adres aan om de offerte naar een ander e-mailadres te (her)sturen.</p>
           </div>
           <div>
@@ -981,7 +1001,7 @@ function EditOfferteView({
           </div>
           <div className="flex justify-end gap-2 pt-2 border-t border-gray-200">
             <Button variant="ghost" onClick={() => setShowEmailDialog(false)} disabled={sending}>Annuleren</Button>
-            <Button onClick={handleSendEmail} disabled={sending || !emailTo}>
+            <Button onClick={handleSendEmail} disabled={sending || combineerOntvangers(gekozenEmails, extraEmail).length === 0}>
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               {sending ? 'Verzenden...' : 'Versturen'}
             </Button>

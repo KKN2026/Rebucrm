@@ -251,11 +251,20 @@ export function FactuurList({ facturen, ordersMetStatus }: { facturen: Factuur[]
   const initialTab = (searchParams.get('tab') as TabType) || 'openstaand'
   const [tab, setTab] = useState<TabType>(['alle', 'openstaand', 'aanbetaling', 'restbetaling', 'gecrediteerd', 'per-klus'].includes(initialTab) ? initialTab : 'openstaand')
   const [vervallenOnly, setVervallenOnly] = useState<boolean>(searchParams.get('vervallen') === '1')
+  // ?periode=YYYY-MM (vanuit dashboard-KPI of rapportages-maandtabel): toon
+  // alleen de facturen die samen de omzet van die maand vormen.
+  const leesPeriode = () => {
+    const p = searchParams.get('periode')
+    return p && /^\d{4}-(0[1-9]|1[0-2])$/.test(p) ? p : null
+  }
+  const [periodeFilter, setPeriodeFilter] = useState<string | null>(leesPeriode)
 
   useEffect(() => {
     const t = searchParams.get('tab') as TabType | null
     if (t && ['alle', 'openstaand', 'aanbetaling', 'restbetaling', 'gecrediteerd', 'per-klus'].includes(t)) setTab(t)
     setVervallenOnly(searchParams.get('vervallen') === '1')
+    setPeriodeFilter(leesPeriode())
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams])
   const [syncing, setSyncing] = useState(false)
   const [versturenLoading, setVersturenLoading] = useState<string | null>(null)
@@ -431,6 +440,64 @@ export function FactuurList({ facturen, ordersMetStatus }: { facturen: Factuur[]
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, 'Facturen')
     XLSX.writeFile(wb, `facturen-export-${new Date().toISOString().slice(0, 10)}.xlsx`)
+  }
+
+  // Periode-drilldown: exact dezelfde selectie als de omzet-KPI op het
+  // dashboard (excl. concept, gecrediteerd en credit-nota's; op factuurdatum),
+  // zodat het getoonde totaal 1-op-1 aansluit op het dashboardbedrag.
+  if (periodeFilter) {
+    const periodeFacturen = sorted.filter(f =>
+      (f.datum || '').slice(0, 7) === periodeFilter
+      && f.status !== 'concept' && f.status !== 'gecrediteerd'
+      && f.factuur_type !== 'credit'
+    )
+    const periodeOmzet = periodeFacturen.reduce((s, f) => s + (f.subtotaal || 0), 0)
+    const periodeInclBtw = periodeFacturen.reduce((s, f) => s + (f.totaal || 0), 0)
+    const periodeLabel = new Date(`${periodeFilter}-01T00:00:00`).toLocaleDateString('nl-NL', { month: 'long', year: 'numeric' })
+    return (
+      <div>
+        <PageHeader
+          title={`Omzet ${periodeLabel}`}
+          actions={
+            <Button variant="ghost" size="sm" onClick={() => router.push('/facturatie')}>
+              Alle facturen
+            </Button>
+          }
+        />
+        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 mb-4 flex flex-wrap items-center gap-x-6 gap-y-1">
+          <div>
+            <p className="text-xs text-emerald-700">Omzet {periodeLabel} (excl. BTW)</p>
+            <p className="text-xl font-bold text-emerald-900">{formatCurrency(periodeOmzet)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-emerald-700">Incl. BTW</p>
+            <p className="text-xl font-semibold text-emerald-800">{formatCurrency(periodeInclBtw)}</p>
+          </div>
+          <div>
+            <p className="text-xs text-emerald-700">Facturen</p>
+            <p className="text-xl font-semibold text-emerald-800">{periodeFacturen.length}</p>
+          </div>
+          <p className="basis-full text-[11px] text-emerald-700/80 mt-1">
+            Dit zijn de facturen waaruit dit omzetbedrag is opgebouwd — concepten, gecrediteerde facturen en creditnota&apos;s tellen niet mee.
+          </p>
+        </div>
+        {periodeFacturen.length === 0 ? (
+          <EmptyState icon={Receipt} title="Geen facturen" description={`Geen omzetfacturen in ${periodeLabel}.`} />
+        ) : (
+          <DataTable
+            columns={columns}
+            data={periodeFacturen}
+            searchPlaceholder="Zoek factuur..."
+            onRowClick={(row) => router.push(`/facturatie/${row.id}`)}
+            mobileCard={(f) => ({
+              title: f.factuurnummer,
+              subtitle: f.relatie?.bedrijfsnaam || '—',
+              rightBottom: <span className="font-medium text-gray-900">{formatCurrency(f.totaal)}</span>,
+            })}
+          />
+        )}
+      </div>
+    )
   }
 
   return (

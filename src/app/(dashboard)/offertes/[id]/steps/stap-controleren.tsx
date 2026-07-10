@@ -270,12 +270,15 @@ export function StapControleren({
         return
       }
 
-      const { totaal: pdfTotaal, elementen } = result as {
+      const { totaal: pdfTotaal, elementen, waarschuwing } = result as {
         totaal: number
         elementen: { naam: string; prijs: number; hoeveelheid: number }[]
         aantalElementen: number
         pdfPath: string
+        waarschuwing?: string
       }
+      // Niet-blokkerende waarschuwing (scan zonder tekst / 0 elementen herkend)
+      if (waarschuwing) setError(waarschuwing)
 
       setPdfProgress(`Tekeningen extraheren (0/${elementen.length})...`)
 
@@ -749,6 +752,10 @@ export function StapControleren({
               )}
               <Input id="datum" name="datum" label="Datum *" type="date" defaultValue={(offerte?.datum as string) || new Date().toISOString().split('T')[0]} required />
               <Input id="geldig_tot" name="geldig_tot" label="Geldig tot" type="date" defaultValue={(offerte?.geldig_tot as string) || new Date(Date.now() + 60 * 86400000).toISOString().split('T')[0]} />
+              <div>
+                <Input id="verwachte_valdatum" name="verwachte_valdatum" label="Verwachte valdatum" type="date" defaultValue={(offerte?.verwachte_valdatum as string) || ''} />
+                <p className="text-xs text-gray-400 mt-1">Wanneer verwacht je dat de klant beslist? Stuurt de opvolgtaak en de omzetprognose.</p>
+              </div>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Select

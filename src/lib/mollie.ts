@@ -61,10 +61,31 @@ export async function createMolliePayment(options: {
 }
 
 /**
- * Idempotente helper: zorgt dat een factuur een betaal_link heeft.
- * Genereert een nieuwe Mollie Payment Link als die nog ontbreekt + er een
- * openstaand bedrag is. Update meteen de DB. Faalt nooit hard — bij Mollie-
- * fout wordt enkel een warning gelogd zodat de aanroeper niet crasht.
+ * Trekt een Mollie Payment Link in (best-effort) zodat een klant niet meer
+ * via een verouderde link het verkeerde bedrag kan betalen.
+ */
+export async function cancelMolliePaymentLink(paymentLinkId: string): Promise<boolean> {
+  if (!paymentLinkId.startsWith('pl_')) return false
+  try {
+    const mollie = getMollieClient()
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await (mollie as any).paymentLinks.delete(paymentLinkId)
+    return true
+  } catch (err) {
+    console.warn('cancelMolliePaymentLink: intrekken mislukt:', err)
+    return false
+  }
+}
+
+/**
+ * Idempotente helper: zorgt dat een factuur een betaal_link heeft MET het
+ * juiste bedrag. Genereert een nieuwe Mollie Payment Link als die nog
+ * ontbreekt + er een openstaand bedrag is. Bestaat er al een link, dan wordt
+ * bij Mollie geverifieerd dat het linkbedrag nog gelijk is aan het openstaande
+ * bedrag — een factuur kan immers gewijzigd zijn ná het aanmaken van de link.
+ * Wijkt het af, dan wordt de oude link ingetrokken en een nieuwe aangemaakt.
+ * Update meteen de DB. Faalt nooit hard — bij Mollie-fout wordt enkel een
+ * warning gelogd zodat de aanroeper niet crasht.
  */
 import { createAdminClient } from '@/lib/supabase/admin'
 export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link: string | null; created: boolean }> {
@@ -76,9 +97,33 @@ export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link
     .eq('id', factuurId)
     .maybeSingle()
   if (!f) return { link: null, created: false }
-  if (f.betaal_link) return { link: f.betaal_link as string, created: false }
-  if (f.status === 'gecrediteerd' || f.status === 'betaald') return { link: null, created: false }
   const openstaand = Number(f.totaal || 0) - Number(f.betaald_bedrag || 0)
+  if (f.betaal_link) {
+    const linkNogGeldig = await (async () => {
+      const plId = f.mollie_payment_id as string | null
+      // Oude tr_-payments of onbekend ID: laat staan (backwards-compat).
+      if (!plId || !plId.startsWith('pl_')) return true
+      try {
+        const mollie = getMollieClient()
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const link: any = await (mollie as any).paymentLinks.get(plId)
+        if (link?.paidAt) return true // al betaald — nooit vervangen
+        const linkBedrag = parseFloat(link?.amount?.value || '0')
+        return Math.abs(linkBedrag - openstaand) < 0.005
+      } catch {
+        // Verificatie niet mogelijk → bestaande link niet zomaar weggooien
+        return true
+      }
+    })()
+    if (linkNogGeldig) return { link: f.betaal_link as string, created: false }
+    // Bedrag klopt niet meer: oude link intrekken en hieronder (indien van
+    // toepassing) een verse aanmaken met het juiste openstaande bedrag.
+    if (f.mollie_payment_id) await cancelMolliePaymentLink(f.mollie_payment_id as string)
+    await sb.from('facturen')
+      .update({ betaal_link: null, mollie_payment_id: null })
+      .eq('id', factuurId)
+  }
+  if (['gecrediteerd', 'geannuleerd', 'betaald'].includes(f.status as string)) return { link: null, created: false }
   if (openstaand <= 0) return { link: null, created: false }
   try {
     // Sanitize de URL — Vercel env vars hebben soms ingebakken \n / spaces

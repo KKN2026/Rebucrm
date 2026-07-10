@@ -13,7 +13,8 @@ import { SearchSelect } from '@/components/ui/search-select'
 import { Button } from '@/components/ui/button'
 import { Dialog } from '@/components/ui/dialog'
 import { formatCurrency, handleNumberPaste } from '@/lib/utils'
-import { Save, Trash2, ArrowLeft, Plus, X, Download, Send, Mail, Paperclip, Loader2, Link2, Copy } from 'lucide-react'
+import { Save, Trash2, ArrowLeft, Plus, X, Download, Send, Paperclip, Loader2, Link2, Copy } from 'lucide-react'
+import { EmailOntvangers, combineerOntvangers, type EmailContactOptie } from '@/components/ui/email-ontvangers'
 import { AuditLogTab } from '@/components/audit-log/audit-log-tab'
 
 interface Regel {
@@ -49,9 +50,12 @@ export function FactuurForm({ factuur, relaties, producten, nummerPreview = '', 
     (factuur?.regels as Regel[]) || [{ omschrijving: '', aantal: 1, prijs: 0, btw_percentage: 21 }]
   )
 
-  // Email state
+  // Email state — ontvangers: aan te vinken contactpersonen van de relatie +
+  // vrij veld voor losse adressen. Meerdere contactpersonen tegelijk kan.
   const [showEmailDialog, setShowEmailDialog] = useState(false)
-  const [emailTo, setEmailTo] = useState('')
+  const [emailContacten, setEmailContacten] = useState<EmailContactOptie[]>([])
+  const [gekozenEmails, setGekozenEmails] = useState<string[]>([])
+  const [extraEmail, setExtraEmail] = useState('')
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
   const [emailAttachments, setEmailAttachments] = useState<File[]>([])
@@ -128,7 +132,18 @@ export function FactuurForm({ factuur, relaties, producten, nummerPreview = '', 
     // handmatig adres/onderwerp/body kan invullen voor review.
     try {
       const defaults = await getFactuurEmailDefaults(factuur!.id as string)
-      setEmailTo(defaults.to || '')
+      const opties = (defaults.contacten || []) as EmailContactOptie[]
+      setEmailContacten(opties)
+      // Voorselectie: het standaard-(factuur)adres als het tussen de contacten
+      // staat, anders in het vrije veld.
+      const standaard = (defaults.to || '').trim()
+      if (standaard && opties.some(c => c.email.toLowerCase() === standaard.toLowerCase())) {
+        setGekozenEmails([opties.find(c => c.email.toLowerCase() === standaard.toLowerCase())!.email])
+        setExtraEmail('')
+      } else {
+        setGekozenEmails([])
+        setExtraEmail(standaard)
+      }
       setEmailSubject(defaults.subject || '')
       setEmailBody(plainTextToHtml(defaults.body || ''))
       if (defaults.error) setError(defaults.error)
@@ -164,7 +179,7 @@ export function FactuurForm({ factuur, relaties, producten, nummerPreview = '', 
       extraBijlagen.push({ filename: file.name, content: base64 })
     }
     const result = await sendFactuurEmail(factuur!.id as string, {
-      to: emailTo, subject: emailSubject, body: emailBody,
+      to: combineerOntvangers(gekozenEmails, extraEmail), subject: emailSubject, body: emailBody,
       extraBijlagen: extraBijlagen.length > 0 ? extraBijlagen : undefined,
     })
     setSending(false)
@@ -242,10 +257,13 @@ export function FactuurForm({ factuur, relaties, producten, nummerPreview = '', 
       {/* Email compose dialog */}
       <Dialog open={showEmailDialog} onClose={() => setShowEmailDialog(false)} title="Factuur versturen" className="max-w-2xl">
         <div className="space-y-4">
-          <div>
-            <label htmlFor="email_to" className="block text-sm font-medium text-gray-700 mb-1"><Mail className="h-3.5 w-3.5 inline mr-1" />Aan</label>
-            <input id="email_to" type="email" value={emailTo} onChange={e => setEmailTo(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" placeholder="E-mailadres ontvanger" />
-          </div>
+          <EmailOntvangers
+            contacten={emailContacten}
+            geselecteerd={gekozenEmails}
+            onToggle={email => setGekozenEmails(prev => prev.includes(email) ? prev.filter(e => e !== email) : [...prev, email])}
+            extra={extraEmail}
+            onExtraChange={setExtraEmail}
+          />
           <div>
             <label htmlFor="email_subject" className="block text-sm font-medium text-gray-700 mb-1">Onderwerp</label>
             <input id="email_subject" type="text" value={emailSubject} onChange={e => setEmailSubject(e.target.value)} className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent" />
@@ -287,7 +305,7 @@ export function FactuurForm({ factuur, relaties, producten, nummerPreview = '', 
           </div>
           <div className="flex justify-end gap-2 pt-2 border-t border-gray-200">
             <Button variant="ghost" onClick={() => setShowEmailDialog(false)} disabled={sending}>Annuleren</Button>
-            <Button onClick={handleSendEmail} disabled={sending || !emailTo}>
+            <Button onClick={handleSendEmail} disabled={sending || combineerOntvangers(gekozenEmails, extraEmail).length === 0}>
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
               {sending ? 'Verzenden...' : 'Versturen'}
             </Button>

@@ -48,8 +48,24 @@ function htmlNaarTekst(html: string): string {
     .trim()
 }
 
+// Normaliseert één of meer ontvangers naar een nette lijst: accepteert een
+// array of een string met komma/puntkomma-gescheiden adressen. Ontdubbelt
+// hoofdletterongevoelig (Jan@X.nl == jan@x.nl) zodat niemand de mail dubbel krijgt.
+export function normaliseerOntvangers(to: string | string[]): string[] {
+  const lijst = Array.isArray(to) ? to : to.split(/[,;]/)
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const e of lijst) {
+    const adres = e.trim()
+    if (!adres.includes('@') || seen.has(adres.toLowerCase())) continue
+    seen.add(adres.toLowerCase())
+    result.push(adres)
+  }
+  return result
+}
+
 export async function sendEmail(options: {
-  to: string
+  to: string | string[]
   subject: string
   html: string
   text?: string
@@ -72,11 +88,13 @@ export async function sendEmail(options: {
   const text = options.text || htmlNaarTekst(options.html)
   // Default replyTo = de afzender (zodat reactie bij medewerker terechtkomt)
   const replyTo = options.replyTo || options.fromEmail || undefined
+  const to = normaliseerOntvangers(options.to)
+  if (to.length === 0) throw new Error('Geen geldig e-mailadres opgegeven')
 
   if (resend) {
     const { error } = await resend.emails.send({
       from,
-      to: options.to,
+      to,
       subject: options.subject,
       html: options.html,
       text,
@@ -98,7 +116,7 @@ export async function sendEmail(options: {
   // SMTP-fallback (zolang RESEND_API_KEY niet gezet is)
   await transporter.sendMail({
     from,
-    to: options.to,
+    to,
     subject: options.subject,
     html: options.html,
     text,

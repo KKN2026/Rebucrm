@@ -140,7 +140,7 @@ export async function GET(req: NextRequest) {
     if (!fase) continue
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const relatie = (f as any).relatie as { contactpersoon?: string | null; bedrijfsnaam?: string | null; email?: string | null; factuur_email?: string | null } | null
+    const relatie = (f as any).relatie as { id?: string | null; contactpersoon?: string | null; bedrijfsnaam?: string | null; email?: string | null; factuur_email?: string | null } | null
     const email = (relatie?.factuur_email || '').trim() || (relatie?.email || '').trim()
     if (!email) continue
 
@@ -159,14 +159,16 @@ export async function GET(req: NextRequest) {
       if (bestaande && bestaande.length > 0) continue
     }
 
-    // Zorg voor een Mollie betaal-link
-    let link = (f.betaal_link as string | null) || null
-    if (!link) {
-      try {
-        const r = await ensureFactuurBetaalLink(f.id)
-        link = r.link
-      } catch { /* ignore */ }
-    }
+    // Zorg voor een Mollie betaal-link met het JUISTE bedrag —
+    // ensureFactuurBetaalLink verifieert een bestaande link en vervangt hem
+    // als de factuur intussen gewijzigd is. Val bij een Mollie-storing terug
+    // op de opgeslagen link zodat de herinnering alsnog verstuurd wordt.
+    let link: string | null = null
+    try {
+      const r = await ensureFactuurBetaalLink(f.id)
+      link = r.link
+    } catch { /* ignore */ }
+    if (!link) link = (f.betaal_link as string | null) || null
     const ctaLink = link && f.publiek_token
       ? `${baseUrl}/api/factuur/${f.publiek_token}/betaal`
       : (link || undefined)

@@ -11,7 +11,7 @@ const EIGEN_MAILBOX_EMAILS = new Set<string>([
 ])
 import { revalidatePath } from 'next/cache'
 import { cookies, headers } from 'next/headers'
-import { sendEmail } from '@/lib/email'
+import { sendEmail, normaliseerOntvangers } from '@/lib/email'
 import { buildRebuEmailHtml, buildFactuurEmailHtml } from '@/lib/email-template'
 import { getAppUrl } from '@/lib/utils'
 import { FACTUUR_OVERRIDE_EMBED, pasFactuurAdresToe } from '@/lib/factuur-adres'
@@ -1015,6 +1015,12 @@ export async function saveOfferte(formData: FormData) {
     return { error: 'Koppel de offerte aan een relatie of verkoopkans voordat u opslaat.' }
   }
 
+  // Verwachte valdatum: alleen meenemen als het formulier het veld meestuurt.
+  // Save-paden zonder dit veld (bv. stap-preview) mogen een bestaande waarde
+  // niet wissen; een lege string betekent expliciet leegmaken.
+  const valdatumRaw = formData.get('verwachte_valdatum') as string | null
+  let verwachteValdatum: string | null | undefined = valdatumRaw === null ? undefined : (valdatumRaw.trim() || null)
+
   const subtotaal = regels.reduce((sum: number, r: { aantal: number; prijs: number }) => sum + r.aantal * r.prijs, 0)
   const btwTotaal = regels.reduce((sum: number, r: { aantal: number; prijs: number; btw_percentage: number }) => sum + (r.aantal * r.prijs * r.btw_percentage) / 100, 0)
 
@@ -1028,7 +1034,7 @@ export async function saveOfferte(formData: FormData) {
     // Check bestaande offertes voor dit project
     const { data: bestaande } = await supabase
       .from('offertes')
-      .select('id, offertenummer, versie_nummer, groep_id')
+      .select('id, offertenummer, versie_nummer, groep_id, verwachte_valdatum')
       .eq('project_id', projectId)
       .order('versie_nummer', { ascending: false })
       .limit(1)
@@ -1037,6 +1043,11 @@ export async function saveOfferte(formData: FormData) {
       offertenummer = bestaande[0].offertenummer
       versieNummer = (bestaande[0].versie_nummer || 1) + 1
       groepId = bestaande[0].groep_id || bestaande[0].id
+      // Nieuwe versie erft de verwachte valdatum van de vorige versie zolang
+      // het formulier zelf geen waarde meestuurt.
+      if (verwachteValdatum === undefined && bestaande[0].verwachte_valdatum) {
+        verwachteValdatum = bestaande[0].verwachte_valdatum as string
+      }
     } else {
       offertenummer = await getVolgendeNummer('offerte')
     }
@@ -1112,6 +1123,7 @@ export async function saveOfferte(formData: FormData) {
     project_id: projectId,
     versie_nummer: versieNummer,
     groep_id: groepId,
+    ...(verwachteValdatum !== undefined ? { verwachte_valdatum: verwachteValdatum } : {}),
   }
 
   let offerteId = id
@@ -1212,9 +1224,58 @@ export async function saveOfferte(formData: FormData) {
     await createOrderFromOfferte(offerteId, supabase, adminId)
   }
 
+  // Valdatum doorzetten naar de gekoppelde taak en de verkoopkans-prognose
+  if (verwachteValdatum !== undefined && offerteId) {
+    await syncOfferteValdatum(offerteId, verwachteValdatum)
+  }
+
   revalidatePath('/offertes')
   revalidatePath('/')
   return { success: true, id: offerteId }
+}
+
+// Koppeling valdatum ↔ taak/verkoopkans. De open opvolgtaak van de offerte
+// (of, ruimer, van de verkoopkans) krijgt de valdatum als deadline, en de
+// verwachte_valmaand van de verkoopkans schuift mee naar dezelfde maand zodat
+// de kanban/rapportage-prognose consistent blijft met de offerte-valdatum.
+// Bij leegmaken van de valdatum laten we taak en valmaand ongemoeid (die kunnen
+// onafhankelijk gezet zijn).
+async function syncOfferteValdatum(offerteId: string, valdatum: string | null) {
+  if (!valdatum) return
+  try {
+    const sb = createAdminClient()
+    const { data: off } = await sb
+      .from('offertes')
+      .select('id, project_id')
+      .eq('id', offerteId)
+      .maybeSingle()
+    if (!off) return
+
+    if (off.project_id) {
+      const valmaand = `${valdatum.slice(0, 7)}-01`
+      await sb.from('projecten').update({ verwachte_valmaand: valmaand }).eq('id', off.project_id)
+    }
+
+    // Zelfde zoekvolgorde als de auto-opvolgtaak in sendOfferteEmail: eerst op
+    // verkoopkans (project_id), anders op offerte_id.
+    let taakZoek = sb
+      .from('taken')
+      .select('id')
+      .ilike('titel', 'Offerte opvolgen%')
+      .neq('status', 'afgerond')
+      .order('created_at', { ascending: false })
+      .limit(1)
+    taakZoek = off.project_id
+      ? taakZoek.eq('project_id', off.project_id)
+      : taakZoek.eq('offerte_id', offerteId)
+    const { data: taak } = await taakZoek.maybeSingle()
+    if (taak?.id) {
+      await sb.from('taken').update({ deadline: valdatum }).eq('id', taak.id)
+      revalidatePath('/taken')
+    }
+  } catch (err) {
+    console.error('Valdatum-sync mislukt:', err)
+  }
 }
 
 async function createOrderFromOfferte(offerteId: string, supabase: Awaited<ReturnType<typeof createClient>>, adminId: string) {
@@ -2248,11 +2309,12 @@ Met vriendelijke groet,
 ${medewerkerNaam}`
 
   // Factuur-email voorrang: als relatie een apart factuur_email heeft gebruiken we dat
-  const relatieRec = factuur.relatie as { email?: string | null; factuur_email?: string | null } | null
+  const relatieRec = factuur.relatie as { email?: string | null; factuur_email?: string | null; contactpersoon?: string | null; bedrijfsnaam?: string | null } | null
   const factuurEmail = (relatieRec?.factuur_email || '').trim() || (relatieRec?.email || '')
 
   return {
     to: factuurEmail,
+    contacten: await getRelatieEmailContacten(factuur.relatie_id as string | null, relatieRec),
     subject: `Factuur ${factuur.factuurnummer} - Rebu Kozijnen`,
     body,
     betaalLink: betaalLink || null,
@@ -2456,7 +2518,9 @@ export async function hermailAlleOpenstaandeFacturen(overrideAdminId?: string) {
 }
 
 export async function sendFactuurEmail(factuurId: string, options: {
-  to: string
+  // Eén adres, komma-gescheiden string of array — meerdere contactpersonen
+  // binnen één relatie kunnen tegelijk aangeschreven worden.
+  to: string | string[]
   subject: string
   body: string
   extraBijlagen?: { filename: string; content: string }[]
@@ -2478,7 +2542,9 @@ export async function sendFactuurEmail(factuurId: string, options: {
 
   // Afwijkende factuurgegevens van de verkoopkans toepassen (override op relatie).
   pasFactuurAdresToe(factuur)
-  if (!options.to) return { error: 'Geen e-mailadres opgegeven' }
+  const ontvangers = normaliseerOntvangers(options.to)
+  if (ontvangers.length === 0) return { error: 'Geen e-mailadres opgegeven' }
+  const ontvangersStr = ontvangers.join(', ')
 
   // Medewerker-info voor mail-footer + Reply-To
   const { data: { user: currentUser } } = await supabase.auth.getUser()
@@ -2501,7 +2567,10 @@ export async function sendFactuurEmail(factuurId: string, options: {
   // PARALLEL: Mollie betaal-link aanmaken (indien nodig) + Factuur-PDF renderen.
   // Eerder gebeurde dit sequentieel waardoor versturen 5–10s duurde. Beide
   // takken zijn idempotent en kunnen tegelijk lopen.
-  const mollieDoNothing = !!huidigeBetaalLink || openstaandBedrag <= 0
+  // NB: een bestaande betaal_link is GEEN reden om Mollie over te slaan —
+  // ensureFactuurBetaalLink verifieert dat het linkbedrag nog klopt en
+  // vervangt de link als de factuur intussen gewijzigd is.
+  const mollieDoNothing = openstaandBedrag <= 0
     || factuur.status === 'gecrediteerd' || factuur.status === 'betaald'
 
   const molliePromise: Promise<string | null | { error: string }> = (async () => {
@@ -2567,7 +2636,7 @@ export async function sendFactuurEmail(factuurId: string, options: {
     // adres. Andere medewerkers gebruiken de gedeelde info@-postbus.
     const eigenMailbox = mwInfo?.email && EIGEN_MAILBOX_EMAILS.has(mwInfo.email.toLowerCase())
     await sendEmail({
-      to: options.to,
+      to: ontvangers,
       subject: options.subject,
       html: emailHtml,
       attachments: attachments.map(a => ({
@@ -2631,7 +2700,7 @@ export async function sendFactuurEmail(factuurId: string, options: {
       entiteitType: 'factuur',
       entiteitId: factuurId,
       details: {
-        aan: options.to,
+        aan: ontvangersStr,
         onderwerp: options.subject,
         totaal: factuur.totaal,
         openstaand: openstaandBedrag,
@@ -2663,7 +2732,7 @@ export async function sendFactuurEmail(factuurId: string, options: {
     administratie_id: factuur.administratie_id,
     factuur_id: factuurId,
     relatie_id: factuur.relatie_id,
-    aan: options.to,
+    aan: ontvangersStr,
     onderwerp: options.subject,
     body_html: emailHtml,
     bijlagen: bijlagenMeta,
@@ -2954,6 +3023,16 @@ export async function crediteerFactuur(factuurId: string, reden?: string) {
   // Origineel PAS op 'gecrediteerd' zetten NADAT push gelukt is (anders skipt push hem)
   await supabaseAdmin.from('facturen').update({ status: 'gecrediteerd' }).eq('id', original.id)
 
+  // Betaallink van het origineel intrekken — een gecrediteerde factuur mag
+  // niet meer via de oude Mollie-link betaald kunnen worden.
+  if (original.mollie_payment_id) {
+    const { cancelMolliePaymentLink } = await import('@/lib/mollie')
+    await cancelMolliePaymentLink(original.mollie_payment_id as string)
+    await supabaseAdmin.from('facturen')
+      .update({ betaal_link: null, mollie_payment_id: null })
+      .eq('id', original.id)
+  }
+
   revalidatePath('/facturatie')
   revalidatePath(`/facturatie/${factuurId}`)
   return { success: true, creditnotaId: creditnota.id, factuurnummer: creditnota.factuurnummer }
@@ -3192,35 +3271,14 @@ export async function syncSnelstartBetalingen(administratieIdOverride?: string) 
 // geconfigureerd is, als factuur al betaald is, of bij Mollie-API errors.
 export async function zorgVoorBetaallink(factuurId: string): Promise<string | null> {
   try {
-    const supabaseAdmin = createAdminClient()
-    const { data: factuur } = await supabaseAdmin
-      .from('facturen')
-      .select('id, factuurnummer, totaal, betaald_bedrag, status, betaal_link, mollie_payment_id')
-      .eq('id', factuurId)
-      .single()
-    if (!factuur) return null
-    if (factuur.betaal_link) return factuur.betaal_link as string
-    // 'concept' wordt NIET meer uitgesloten — user-wens: altijd Mollie-link
-    // klaar op de factuur, ook al staat hij op concept. Pas bij verzending
-    // hangt hij dan in de email.
-    if (['gecrediteerd', 'geannuleerd'].includes(factuur.status as string)) return null
-    const openstaand = Number(factuur.totaal || 0) - Number(factuur.betaald_bedrag || 0)
-    if (openstaand <= 0) return null
-    if (!process.env.MOLLIE_API_KEY) return null
-
-    const { createMolliePayment } = await import('@/lib/mollie')
-    const appUrl = getAppUrl()
-    const payment = await createMolliePayment({
-      amount: openstaand,
-      description: `Factuur ${factuur.factuurnummer}`,
-      redirectUrl: `${appUrl}/betaling/succes`,
-      webhookUrl: `${appUrl}/api/mollie/webhook`,
-    })
-    await supabaseAdmin
-      .from('facturen')
-      .update({ mollie_payment_id: payment.id, betaal_link: payment.checkoutUrl })
-      .eq('id', factuurId)
-    return payment.checkoutUrl
+    // 'concept' wordt NIET uitgesloten — user-wens: altijd Mollie-link klaar
+    // op de factuur, ook al staat hij op concept. ensureFactuurBetaalLink
+    // verifieert bovendien dat een bestaande link nog het juiste bedrag heeft
+    // en vervangt hem anders — een factuurwijziging mag nooit een oude link
+    // met het verkeerde bedrag laten staan.
+    const { ensureFactuurBetaalLink } = await import('@/lib/mollie')
+    const { link } = await ensureFactuurBetaalLink(factuurId)
+    return link
   } catch (err) {
     console.error('zorgVoorBetaallink fout:', err)
     return null
@@ -3950,6 +4008,95 @@ export async function getMaandPrognose(jaar: number) {
     maandDoel,
     jaarDoel: Number(doelRow?.jaar_doel || 0),
     regels,
+  }
+}
+
+// Verwachte omzet per maand op basis van de verwachte valdatum van offertes
+// (excl. BTW). Per offerte-groep telt alleen de laatste versie mee, zodat een
+// herziene offerte niet dubbel in de prognose zit. Open = verzonden (klant
+// beslist nog), gewonnen = geaccepteerd. Voedt de dashboard-widget.
+export async function getVerwachteOmzetPerMaand(jaar: number) {
+  const supabase = await createClient()
+  const adminId = await getAdministratieId()
+  if (!adminId) return null
+
+  // Alle (niet-gearchiveerde) offertes ophalen en pas NA de dedup op laatste
+  // versie filteren op status/valdatum. Eerst filteren zou een verouderde
+  // versie als "laatste" aanwijzen zodra de echte laatste buiten het filter
+  // valt (bv. v2 afgewezen → v1 blijft eeuwig als open omzet staan).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const offertes = await fetchAllRows<any>((from, to) =>
+    supabase
+      .from('offertes')
+      .select('id, groep_id, status, subtotaal, totaal, datum, versie_nummer, created_at, verwachte_valdatum, offertenummer, relatie:relaties(bedrijfsnaam, contactpersoon)')
+      .eq('administratie_id', adminId)
+      .or('gearchiveerd.is.null,gearchiveerd.eq.false')
+      .range(from, to),
+  )
+
+  // Laatste versie per groep (datum → versie_nummer → created_at als tiebreakers)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const perGroep = new Map<string, any>()
+  for (const o of offertes) {
+    const key = (o.groep_id as string) || (o.id as string)
+    const huidig = perGroep.get(key)
+    if (!huidig) { perGroep.set(key, o); continue }
+    const da = o.datum ? new Date(o.datum).getTime() : 0
+    const db = huidig.datum ? new Date(huidig.datum).getTime() : 0
+    const nieuwer = da !== db
+      ? da > db
+      : (o.versie_nummer || 0) !== (huidig.versie_nummer || 0)
+        ? (o.versie_nummer || 0) > (huidig.versie_nummer || 0)
+        : new Date(o.created_at || 0).getTime() > new Date(huidig.created_at || 0).getTime()
+    if (nieuwer) perGroep.set(key, o)
+  }
+
+  const maanden = Array.from({ length: 12 }, (_, i) => ({
+    maand: i + 1,
+    open: 0,
+    gewonnen: 0,
+    aantalOpen: 0,
+    aantalGewonnen: 0,
+    offertes: [] as { id: string; offertenummer: string; relatieNaam: string | null; bedrag: number; status: string; valdatum: string }[],
+  }))
+
+  for (const o of perGroep.values()) {
+    // Nu pas filteren: alleen de LAATSTE versie telt, en alleen als die
+    // open/gewonnen is met een valdatum in het gevraagde jaar.
+    if (o.status !== 'verzonden' && o.status !== 'geaccepteerd') continue
+    const valdatum = o.verwachte_valdatum as string | null
+    if (!valdatum || !valdatum.startsWith(`${jaar}-`)) continue
+    const bedrag = Number(o.subtotaal || 0) || (o.totaal ? Number(o.totaal) / 1.21 : 0)
+    const maandIdx = parseInt(String(o.verwachte_valdatum).slice(5, 7), 10) - 1
+    const bucket = maanden[maandIdx]
+    if (!bucket) continue
+    if (o.status === 'geaccepteerd') {
+      bucket.gewonnen += bedrag
+      bucket.aantalGewonnen += 1
+    } else {
+      bucket.open += bedrag
+      bucket.aantalOpen += 1
+    }
+    bucket.offertes.push({
+      id: o.id,
+      offertenummer: o.offertenummer,
+      relatieNaam: o.relatie?.bedrijfsnaam || o.relatie?.contactpersoon || null,
+      bedrag: Math.round(bedrag),
+      status: o.status,
+      valdatum: o.verwachte_valdatum,
+    })
+  }
+
+  return {
+    jaar,
+    maanden: maanden.map(m => ({
+      ...m,
+      open: Math.round(m.open),
+      gewonnen: Math.round(m.gewonnen),
+      totaal: Math.round(m.open + m.gewonnen),
+    })),
+    totaalOpen: Math.round(maanden.reduce((s, m) => s + m.open, 0)),
+    totaalGewonnen: Math.round(maanden.reduce((s, m) => s + m.gewonnen, 0)),
   }
 }
 
@@ -4769,9 +4916,12 @@ export async function getMaandOmzetAnalytics() {
 // verkoopkans). Eén bron voor zowel de dashboard-kop als de "Conversie per
 // maand"-pop-up, zodat die twee altijd hetzelfde getal tonen.
 //
-// Definities (gelijk aan de bestaande pop-up): "verstuurd" = offertes met
-// status verzonden óf geaccepteerd; "doorgegaan" = daarvan de geaccepteerde.
-// Migratie-bulkrecords (april 2026 import) worden er net als elders uitgefilterd.
+// Definities: "verstuurd" = offertes met status verzonden óf geaccepteerd;
+// "doorgegaan" = verkoopkansen die GEFACTUREERD zijn (≥1 echte factuur —
+// niet concept/gecrediteerd/credit — gekoppeld aan een versie van de groep).
+// Een offerte die alleen op 'geaccepteerd' staat maar nooit gefactureerd is,
+// telt dus niet als conversie. Migratie-bulkrecords (april 2026 import)
+// worden er net als elders uitgefilterd.
 export async function getOfferteConversieDitJaar() {
   const sb = createAdminClient()
   const adminId = await getAdministratieId()
@@ -4810,16 +4960,33 @@ export async function getOfferteConversieDitJaar() {
       .range(from, to),
   )
 
-  // Per groep_id (= losse offerte): datum van de EERSTE versie, status van de
-  // LAATSTE versie. Zo telt een offerte één keer, in zijn oorspronkelijke maand.
-  const groep = new Map<string, { datum: string | null; createdAt: string | null; status: string | null; vMin: number; vMax: number }>()
+  // Alle echte facturen met offerte-koppeling: bepaalt welke verkoopkansen
+  // "doorgegaan" (gefactureerd) zijn. Zelfde uitsluitingen als de omzet.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const facturenRaw = await fetchAllRows<any>((from, to) =>
+    sb.from('facturen')
+      .select('offerte_id, status, factuur_type')
+      .eq('administratie_id', adminId)
+      .not('offerte_id', 'is', null)
+      .range(from, to),
+  )
+  const gefactureerdeOfferteIds = new Set<string>(
+    facturenRaw
+      .filter(f => f.offerte_id && !['concept', 'gecrediteerd'].includes(f.status) && f.factuur_type !== 'credit')
+      .map(f => f.offerte_id as string),
+  )
+
+  // Per groep_id (= losse offerte): datum van de EERSTE versie, plus of één
+  // van de versies gefactureerd is. Zo telt een offerte één keer, in zijn
+  // oorspronkelijke maand.
+  const groep = new Map<string, { datum: string | null; createdAt: string | null; gefactureerd: boolean; vMin: number }>()
   for (const o of offertesRaw) {
     const key = o.groep_id || o.id
     const v = o.versie_nummer || 1
     let g = groep.get(key)
-    if (!g) { g = { datum: null, createdAt: null, status: null, vMin: Number.POSITIVE_INFINITY, vMax: 0 }; groep.set(key, g) }
+    if (!g) { g = { datum: null, createdAt: null, gefactureerd: false, vMin: Number.POSITIVE_INFINITY }; groep.set(key, g) }
     if (v < g.vMin) { g.vMin = v; g.datum = o.datum; g.createdAt = o.created_at }
-    if (v >= g.vMax) { g.vMax = v; g.status = o.status }
+    if (gefactureerdeOfferteIds.has(o.id)) g.gefactureerd = true
   }
 
   for (const [, g] of groep) {
@@ -4829,7 +4996,7 @@ export async function getOfferteConversieDitJaar() {
     const bucket = maanden.find(x => x.maand === m)
     if (!bucket) continue
     bucket.verstuurdAantal += 1
-    if (g.status === 'geaccepteerd') bucket.geaccepteerdAantal += 1
+    if (g.gefactureerd) bucket.geaccepteerdAantal += 1
   }
 
   const verstuurdAantal = maanden.reduce((s, m) => s + m.verstuurdAantal, 0)
@@ -4979,18 +5146,19 @@ export async function getDashboardData() {
   const relatiesData = relatiesRes.data || []
   const profielenData = profielenRes.data || []
 
-  // Basis KPIs — omzet = gefactureerd deze maand (excl. concept + gecrediteerd + credit-nota's).
-  // Credit-facturen verlagen de omzet NIET; zij verminderen het openstaand-saldo
-  // via snelstart_openstaand of betaald_bedrag.
+  // Basis KPIs — omzet = gefactureerd in de periode (excl. concept, gecrediteerd
+  // én credit-nota's). Bij crediteren valt het origineel weg (status
+  // 'gecrediteerd') en wordt de creditnota genegeerd — anders zou hetzelfde
+  // bedrag DUBBEL van de omzet afgaan (origineel weg + negatieve creditnota).
+  // Credit-nota's verrekenen alleen het openstaand-saldo (zie verderop).
   const UITGESLOTEN_STATUSSEN = ['concept', 'gecrediteerd']
+  const teltMeeInOmzet = (f: { status: string; factuur_type?: string | null; datum?: string | null }) =>
+    !!f.datum && !UITGESLOTEN_STATUSSEN.includes(f.status) && f.factuur_type !== 'credit'
   const huidigeMaand = new Date().getMonth() + 1
   const huidigJaar = new Date().getFullYear()
-  // Omzet = som van subtotaal van alle facturen behalve concept/gecrediteerd.
-  // Credit-nota's tellen WEL mee: hun subtotaal staat negatief in de DB, dus
-  // optellen geeft automatisch netto-omzet (gefactureerd minus credit).
   const omzet = facturenData
     .filter(f => {
-      if (!f.datum || UITGESLOTEN_STATUSSEN.includes(f.status)) return false
+      if (!teltMeeInOmzet(f)) return false
       const fd = new Date(f.datum)
       return fd.getFullYear() === huidigJaar && fd.getMonth() + 1 === huidigeMaand
     })
@@ -5001,7 +5169,7 @@ export async function getDashboardData() {
   const vorigeMaandJaar = vorigeMaandDate.getFullYear()
   const omzetVorigeMaand = facturenData
     .filter(f => {
-      if (!f.datum || UITGESLOTEN_STATUSSEN.includes(f.status)) return false
+      if (!teltMeeInOmzet(f)) return false
       const fd = new Date(f.datum)
       return fd.getFullYear() === vorigeMaandJaar && fd.getMonth() + 1 === vorigeMaand
     })
@@ -5061,7 +5229,7 @@ export async function getDashboardData() {
     const maand = d.getMonth() + 1
     const bedrag = facturenData
       .filter(f => {
-        if (UITGESLOTEN_STATUSSEN.includes(f.status) || !f.datum) return false
+        if (!teltMeeInOmzet(f)) return false
         const fd = new Date(f.datum)
         return fd.getFullYear() === jaar && fd.getMonth() + 1 === maand
       })
@@ -5077,7 +5245,7 @@ export async function getDashboardData() {
     const jaar = d.getFullYear()
     const maandNr = d.getMonth() + 1
     const maandFacturen = facturenData.filter(f => {
-      if (UITGESLOTEN_STATUSSEN.includes(f.status) || !f.datum) return false
+      if (!teltMeeInOmzet(f)) return false
       const fd = new Date(f.datum)
       return fd.getFullYear() === jaar && fd.getMonth() + 1 === maandNr
     })
@@ -5087,8 +5255,8 @@ export async function getDashboardData() {
       aantal: maandFacturen.length,
     })
   }
-  const totaalGefactureerd = facturenData.filter(f => !UITGESLOTEN_STATUSSEN.includes(f.status)).reduce((sum, f) => sum + (f.subtotaal || 0), 0)
-  const totaalFacturen = facturenData.filter(f => !UITGESLOTEN_STATUSSEN.includes(f.status)).length
+  const totaalGefactureerd = facturenData.filter(teltMeeInOmzet).reduce((sum, f) => sum + (f.subtotaal || 0), 0)
+  const totaalFacturen = facturenData.filter(teltMeeInOmzet).length
 
   // Aangemaakte offertes per maand — per project alleen de laatste offerte meetellen
   // Groepeer offertes per project_id: neem alleen de nieuwste per project
@@ -5180,55 +5348,10 @@ export async function getDashboardData() {
     bedrag: facturenData.filter(f => f.status === status).reduce((sum, f) => sum + (f.totaal || 0), 0),
   }))
 
-  // Taken per collega (met breakdown per titel)
-  // Groepeer profielen op naam (voorkomt duplicaten als iemand meerdere profiel-entries heeft)
-  const profielPerNaam = new Map<string, string[]>()
-  for (const p of profielenData) {
-    const naam = p.naam || 'Onbekend'
-    if (!profielPerNaam.has(naam)) profielPerNaam.set(naam, [])
-    profielPerNaam.get(naam)!.push(p.id)
-  }
-  const takenPerCollega = [...profielPerNaam.entries()].map(([naam, ids]) => {
-    const openTaken = takenData.filter(t => ids.includes(t.toegewezen_aan) && t.status !== 'afgerond')
-    const perTitel: Record<string, number> = {}
-    let bellen = 0
-    let uitwerken = 0
-    for (const t of openTaken) {
-      const titel = t.titel || 'Overig'
-      perTitel[titel] = (perTitel[titel] || 0) + 1
-      // Gebruik expliciet categorie-veld indien aanwezig, anders titel-heuristiek
-      const cat = (t as unknown as { categorie?: string | null }).categorie
-      if (cat === 'Bellen') bellen++
-      else if (cat === 'Uitwerken') uitwerken++
-      else {
-        const l = titel.toLowerCase()
-        if (l.includes('bellen') || l.includes('opbellen') || l.includes('nabellen')) bellen++
-        else uitwerken++
-      }
-    }
-    return {
-      naam,
-      profiel_id: ids[0],
-      aantal: openTaken.length,
-      bellen,
-      uitwerken,
-      perTitel: Object.entries(perTitel).map(([titel, aantal]) => ({ titel, aantal })).sort((a, b) => b.aantal - a.aantal),
-    }
-  }).filter(t => t.aantal > 0)
-
-  // Rol ophalen voor taken filter
-  const { data: userProfiel } = await supabase
-    .from('profielen')
-    .select('rol')
-    .eq('id', user.id)
-    .single()
-  const userRol = userProfiel?.rol || 'medewerker'
-  // Alleen admins zien ALLE taken op dashboard; gebruikers/medewerkers zien eigen
-  const isAdmin = userRol === 'admin'
+  // 'Taken per collega' wordt niet meer hier berekend — de sectie is verhuisd
+  // naar de taken-pagina, die client-side telt uit dezelfde lijst als de tabel.
 
   // Mijn openstaande taken — toon uitsluitend taken toegewezen aan de ingelogde gebruiker
-  // (admins zien alle open taken zodat ze overzicht houden)
-  const profielNaamMap = new Map(profielenData.map(p => [p.id, p.naam]))
   const mijnTaken = takenData
     .filter(t => t.status !== 'afgerond' && t.toegewezen_aan === user.id)
     .map(t => ({
@@ -5447,7 +5570,7 @@ export async function getDashboardData() {
   const startVanWeek = new Date(nuDate.getFullYear(), nuDate.getMonth(), nuDate.getDate() - dagVanWeek)
   startVanWeek.setHours(0, 0, 0, 0)
 
-  const gefactureerdFacturen = facturenData.filter(f => !UITGESLOTEN_STATUSSEN.includes(f.status) && f.datum)
+  const gefactureerdFacturen = facturenData.filter(teltMeeInOmzet)
   const weekOmzet = gefactureerdFacturen
     .filter(f => new Date(f.datum) >= startVanWeek)
     .reduce((sum, f) => sum + (f.subtotaal || 0), 0)
@@ -5715,7 +5838,7 @@ export async function getDashboardData() {
     maandOmzet, gefactureerdPerMaand, totaalGefactureerd, totaalFacturen,
     offertesPerMaand, totaalOffertes, conversieDitJaar, gemFactuurwaardeDitJaar,
     dezeWeek, funnel,
-    organisaties, offertesPerFase, facturenPerFase, takenPerCollega, mijnTaken, openOffertesList, tePlannenOrders, geplandeLeveringen, geaccepteerdeOffertes, openstaandeFacturen,
+    organisaties, offertesPerFase, facturenPerFase, mijnTaken, openOffertesList, tePlannenOrders, geplandeLeveringen, geaccepteerdeOffertes, openstaandeFacturen,
     topKlanten, omzetdoelen, triageEmails, openAanvragen, recenteOffertes, moetBesteldOrders, openVerkoopkansen,
     recenteNotities,
     restbetalingTeVersturen,
@@ -6844,6 +6967,9 @@ export async function duplicateOfferte(id: string) {
       totaal: origineel.totaal,
       opmerkingen: origineel.opmerkingen,
       project_id: origineel.project_id || null,
+      // Nieuwe versie erft de verwachte valdatum — anders verdwijnt de deal
+      // uit de omzetprognose en valt de opvolgtaak terug op +3 werkdagen.
+      verwachte_valdatum: origineel.verwachte_valdatum || null,
       versie_nummer: volgendVersie,
       groep_id: groepId,
     })
@@ -7130,13 +7256,53 @@ ${medewerkerNaam}`
 
   return {
     to: offerte.relatie?.email || '',
+    contacten: await getRelatieEmailContacten(offerte.relatie_id as string | null, offerte.relatie as { email?: string | null; contactpersoon?: string | null; bedrijfsnaam?: string | null } | null),
     subject,
     body,
   }
 }
 
+// Alle aanmailbare contacten van een relatie: het relatie-e-mailadres zelf +
+// alle contactpersonen met een e-mailadres. Voedt de checkbox-selectie in de
+// verstuur-schermen (offerte/factuur), zodat je per verzending kiest welke
+// contactpersonen de mail krijgen.
+async function getRelatieEmailContacten(
+  relatieId: string | null,
+  relatie: { email?: string | null; contactpersoon?: string | null; bedrijfsnaam?: string | null; factuur_email?: string | null } | null,
+): Promise<{ naam: string; email: string; functie?: string | null; isPrimair?: boolean }[]> {
+  const contacten: { naam: string; email: string; functie?: string | null; isPrimair?: boolean }[] = []
+  const seen = new Set<string>()
+  const voegToe = (naam: string, email: string | null | undefined, functie?: string | null, isPrimair?: boolean) => {
+    const adres = (email || '').trim().toLowerCase()
+    if (!adres || !adres.includes('@') || seen.has(adres)) return
+    seen.add(adres)
+    contacten.push({ naam, email: (email || '').trim(), functie, isPrimair })
+  }
+
+  if (relatieId) {
+    try {
+      const sb = createAdminClient()
+      const { data: personen } = await sb
+        .from('contactpersonen')
+        .select('naam, email, functie, is_primair')
+        .eq('relatie_id', relatieId)
+        .order('is_primair', { ascending: false })
+        .order('naam')
+      for (const p of personen || []) voegToe(p.naam, p.email, p.functie, p.is_primair === true)
+    } catch (err) {
+      console.error('Contactpersonen ophalen mislukt:', err)
+    }
+  }
+  // Relatie-adressen als terugval/aanvulling onderaan de lijst
+  voegToe(relatie?.contactpersoon || relatie?.bedrijfsnaam || 'Algemeen adres', relatie?.email)
+  if (relatie?.factuur_email) voegToe('Factuuradres', relatie.factuur_email)
+  return contacten
+}
+
 export async function sendOfferteEmail(offerteId: string, options: {
-  to: string
+  // Eén adres, komma-gescheiden string of array — meerdere contactpersonen
+  // binnen één relatie kunnen tegelijk aangeschreven worden.
+  to: string | string[]
   subject: string
   body: string
   extraBijlagen?: { filename: string; content: string }[]
@@ -7150,7 +7316,9 @@ export async function sendOfferteEmail(offerteId: string, options: {
     .single()
 
   if (!offerte) return { error: 'Offerte niet gevonden' }
-  if (!options.to) return { error: 'Geen e-mailadres opgegeven' }
+  const ontvangers = normaliseerOntvangers(options.to)
+  if (ontvangers.length === 0) return { error: 'Geen e-mailadres opgegeven' }
+  const ontvangersStr = ontvangers.join(', ')
 
   const baseUrl = getAppUrl()
   const link = `${baseUrl}/offerte/${offerte.publiek_token}`
@@ -7345,7 +7513,7 @@ export async function sendOfferteEmail(offerteId: string, options: {
   try {
     const eigenMailbox = medewerkerInfo?.email && EIGEN_MAILBOX_EMAILS.has(medewerkerInfo.email.toLowerCase())
     await sendEmail({
-      to: options.to,
+      to: ontvangers,
       subject: options.subject,
       html: emailHtml,
       attachments: attachments.map(a => ({
@@ -7390,7 +7558,7 @@ export async function sendOfferteEmail(offerteId: string, options: {
     administratie_id: offerte.administratie_id,
     offerte_id: offerteId,
     relatie_id: offerte.relatie_id,
-    aan: options.to,
+    aan: ontvangersStr,
     onderwerp: options.subject,
     body_html: emailHtml,
     bijlagen: bijlagenMeta,
@@ -7429,7 +7597,14 @@ export async function sendOfferteEmail(offerteId: string, options: {
       const dag = deadline.getDay()
       if (dag !== 0 && dag !== 6) werkdagen++
     }
-    const deadlineStr = deadline.toISOString().split('T')[0]
+    // Heeft de offerte een verwachte valdatum in de toekomst, dan is dát de
+    // deadline van de opvolgtaak (de valdatum is gekoppeld aan de taak);
+    // anders de standaard 3 werkdagen.
+    const vandaagStr = new Date().toISOString().split('T')[0]
+    const valdatum = (offerte as { verwachte_valdatum?: string | null }).verwachte_valdatum
+    const deadlineStr = valdatum && valdatum >= vandaagStr
+      ? valdatum
+      : deadline.toISOString().split('T')[0]
 
     // Eén opvolgtaak per verkoopkans: zoek een bestaande open opvolgtaak van
     // deze verkoopkans op project_id i.p.v. op offerte_id. Bij een nieuwe
@@ -7460,7 +7635,7 @@ export async function sendOfferteEmail(offerteId: string, options: {
           administratie_id: offerte.administratie_id,
           taak_id: bestaandeTaak.id,
           gebruiker_id: user.id,
-          tekst: `Offerte ${offerte.offertenummer} opnieuw verzonden naar ${options.to} op ${new Date().toLocaleDateString('nl-NL')}. Deadline opvolgtaak verzet naar ${deadlineStr}.`,
+          tekst: `Offerte ${offerte.offertenummer} opnieuw verzonden naar ${ontvangersStr} op ${new Date().toLocaleDateString('nl-NL')}. Deadline opvolgtaak verzet naar ${deadlineStr}.`,
         })
       }
     } else {
@@ -7480,7 +7655,7 @@ export async function sendOfferteEmail(offerteId: string, options: {
         administratie_id: offerte.administratie_id,
         taaknummer: await getVolgendTaaknummer(supabaseAdmin),
         titel: `Offerte opvolgen: ${offerte.offertenummer}`,
-        omschrijving: `Offerte ${offerte.offertenummer} is verzonden naar ${options.to}. Neem contact op om te checken of alles duidelijk is.`,
+        omschrijving: `Offerte ${offerte.offertenummer} is verzonden naar ${ontvangersStr}. Neem contact op om te checken of alles duidelijk is.`,
         project_id: offerte.project_id || null,
         relatie_id: offerte.relatie_id || null,
         offerte_id: offerteId,
@@ -9123,6 +9298,15 @@ export async function processLeverancierPdf(offerteId: string, formData: FormDat
 
   const { totaal, elementen } = parseLeverancierPdfText(parsed.text)
 
+  // Stille mislukkingen zichtbaar maken: een scan zonder tekstlaag of een
+  // onherkend formaat leverde voorheen gewoon 0 regels op zonder melding.
+  let waarschuwing: string | undefined
+  if (!parsed.text || parsed.text.trim().length < 200) {
+    waarschuwing = 'Deze PDF bevat (bijna) geen leesbare tekst — waarschijnlijk een gescand document. Upload de PDF via de stap Tekeningen: daar wordt de scan automatisch met AI-tekstherkenning verwerkt.'
+  } else if (elementen.length === 0) {
+    waarschuwing = 'Geen elementen herkend in deze PDF. Controleer of dit een originele leverancier-offerte is (Eko-Okna, Schüco, Gealan, Kochs of Reynaers); je kunt regels ook handmatig toevoegen.'
+  }
+
   // Store original PDF in Supabase Storage
   const supabaseAdmin = createAdminClient()
   const timestamp = Date.now()
@@ -9239,6 +9423,7 @@ export async function processLeverancierPdf(offerteId: string, formData: FormDat
     })),
     aantalElementen: elementen.length,
     pdfPath,
+    waarschuwing,
   }
 }
 
@@ -10259,7 +10444,10 @@ export async function saveVrijeDag(formData: FormData) {
   }
 
   if (id) {
-    const { error } = await supabase.from('vrije_dagen').update(record).eq('id', id)
+    // Wijzigen van bestaande vrije dagen is voorbehouden aan de beheerder —
+    // medewerkers kunnen alleen nieuwe aanvragen indienen (status 'aangevraagd').
+    if (rol === 'medewerker') return { error: 'Alleen een beheerder kan vrije dagen wijzigen' }
+    const { error } = await supabase.from('vrije_dagen').update(record).eq('id', id).eq('administratie_id', adminId)
     if (error) return { error: error.message }
   } else {
     const { error } = await supabase.from('vrije_dagen').insert(record)
@@ -10291,6 +10479,19 @@ export async function deleteVrijeDag(id: string) {
   const supabase = await createClient()
   const adminId = await getAdministratieId()
   if (!adminId) return { error: 'Niet ingelogd' }
+  const { rol, eigenMedewerkerId } = await getRolEnEigenMedewerker(supabase, adminId)
+  if (rol === 'medewerker') {
+    // Medewerkers mogen alleen een EIGEN, nog niet beoordeelde aanvraag intrekken.
+    const { data: vd } = await supabase
+      .from('vrije_dagen')
+      .select('medewerker_id, status')
+      .eq('id', id)
+      .eq('administratie_id', adminId)
+      .maybeSingle()
+    if (!vd || vd.medewerker_id !== eigenMedewerkerId || vd.status !== 'aangevraagd') {
+      return { error: 'Alleen een beheerder kan vrije dagen verwijderen' }
+    }
+  }
   const { error } = await supabase.from('vrije_dagen').delete().eq('id', id).eq('administratie_id', adminId)
   if (error) return { error: error.message }
   revalidatePath('/vrije-dagen')

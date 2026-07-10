@@ -65,7 +65,8 @@ export function TaakForm({ taak, projecten, medewerkers, relaties, offertes, not
   const [editNotitieText, setEditNotitieText] = useState('')
   const [showVervolgTaak, setShowVervolgTaak] = useState(false)
   const [vervolgTitel, setVervolgTitel] = useState('')
-  const [vervolgDeadline, setVervolgDeadline] = useState('')
+  // Standaard vandaag: datumkiezer opent dan op de huidige maand i.p.v. leeg
+  const [vervolgDeadline, setVervolgDeadline] = useState(() => new Date().toISOString().slice(0, 10))
   const [vervolgAangemaakt, setVervolgAangemaakt] = useState(false)
 
   // Verkoopkansen-keuzelijst: ALLE projecten tonen (met klantnaam in het label).
@@ -278,7 +279,8 @@ export function TaakForm({ taak, projecten, medewerkers, relaties, offertes, not
               <Select id="prioriteit" name="prioriteit" label="Prioriteit" defaultValue={(taak?.prioriteit as string) || 'normaal'} options={[
                 { value: 'laag', label: 'Laag' }, { value: 'normaal', label: 'Normaal' }, { value: 'hoog', label: 'Hoog' }, { value: 'urgent', label: 'Urgent' },
               ]} />
-              <Input id="deadline" name="deadline" label="Deadline" type="date" defaultValue={taak?.deadline ? String(taak.deadline).slice(0, 10) : ''} />
+              {/* Nieuwe taak: deadline vooraf op vandaag zodat de datumkiezer op de huidige maand opent */}
+              <Input id="deadline" name="deadline" label="Deadline" type="date" defaultValue={taak?.deadline ? String(taak.deadline).slice(0, 10) : new Date().toISOString().slice(0, 10)} />
               <Input id="deadline_tijd" name="deadline_tijd" label="Tijdstip" type="time" defaultValue={taak?.deadline_tijd ? String(taak.deadline_tijd).slice(0, 5) : ''} />
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

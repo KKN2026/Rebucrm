@@ -251,6 +251,24 @@ export function TakenView({ taken, isAdmin, currentUserId, alleMedewerkers = [] 
     }
   }, [taken, filterCollega, filterMedewerkerNaam])
 
+  // Taken per collega — geteld uit exact dezelfde takenlijst als de tabel
+  // hieronder, zodat de aantallen altijd kloppen met wat je ziet. (Stond
+  // eerst als sectie op het dashboard met een eigen — afwijkende — telling.)
+  const perCollega = useMemo(() => {
+    const map = new Map<string, { naam: string; aantal: number; opvolgen: number; offerte: number }>()
+    for (const t of taken) {
+      if (t.status === 'afgerond') continue
+      const naam = t.medewerker?.naam || t.toegewezen?.naam || 'Niet toegewezen'
+      let e = map.get(naam)
+      if (!e) { e = { naam, aantal: 0, opvolgen: 0, offerte: 0 }; map.set(naam, e) }
+      e.aantal++
+      const cat = categorieTaak(t)
+      if (cat === 'opvolgen') e.opvolgen++
+      else if (cat === 'offerte') e.offerte++
+    }
+    return [...map.values()].sort((a, b) => b.aantal - a.aantal)
+  }, [taken])
+
   // Filter op basis van tab + URL params + medewerker dropdown
   const gefilterd = takenGesorteerd.filter(t => {
     if (filterCollega && t.toegewezen_aan !== filterCollega) return false
@@ -467,6 +485,31 @@ export function TakenView({ taken, isAdmin, currentUserId, alleMedewerkers = [] 
           )
         })}
       </div>
+
+      {/* Taken per collega — klik op een collega om diens taken te filteren */}
+      {perCollega.length > 1 && (
+        <div className="mb-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-px bg-gray-100 rounded-xl overflow-hidden border border-gray-100">
+          {perCollega.map(c => {
+            const dropdownId = medewerkers.find(([, naam]) => naam === c.naam)?.[0] || null
+            const geselecteerd = !!filterMedewerkerNaam && filterMedewerkerNaam === c.naam
+            return (
+              <button
+                key={c.naam}
+                type="button"
+                disabled={!dropdownId}
+                onClick={() => dropdownId && setFilterMedewerkerPersist(geselecteerd ? '' : dropdownId)}
+                className={`text-left px-4 py-3 transition-colors ${geselecteerd ? 'bg-[#00a66e] text-white' : 'bg-white hover:bg-gray-50'} ${!dropdownId ? 'cursor-default' : ''}`}
+              >
+                <p className={`text-xs truncate ${geselecteerd ? 'text-white/80' : 'text-gray-500'}`}>{c.naam}</p>
+                <p className={`text-xl font-bold mt-0.5 ${geselecteerd ? 'text-white' : 'text-gray-900'}`}>{c.aantal}</p>
+                <p className={`text-[11px] mt-0.5 ${geselecteerd ? 'text-white/70' : 'text-gray-400'}`}>
+                  {c.opvolgen} opvolgen · {c.offerte} uitwerken
+                </p>
+              </button>
+            )
+          })}
+        </div>
+      )}
 
       {/* Filters */}
       <div className="mb-4 flex items-center gap-3 flex-wrap">

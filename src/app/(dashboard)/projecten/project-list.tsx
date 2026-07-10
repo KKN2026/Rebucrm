@@ -20,6 +20,7 @@ interface Project {
   created_at: string
   budget: number | null
   uurtarief: number | null
+  relatie_id: string | null
   relatie: { bedrijfsnaam: string } | null
   medewerker: { naam: string } | null
   aantal_offertes: number
@@ -61,7 +62,7 @@ export function ProjectList({ projecten }: { projecten: Project[] }) {
 
   function handleNewOfferte(e: React.MouseEvent, project: Project) {
     e.stopPropagation()
-    router.push(`/offertes/nieuw?project_id=${project.id}&relatie_id=${project.relatie ? '' : ''}`)
+    router.push(`/offertes/nieuw?project_id=${project.id}&relatie_id=${project.relatie_id || ''}`)
   }
 
   const columns: ColumnDef<Project, unknown>[] = [

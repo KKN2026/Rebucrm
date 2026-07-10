@@ -27,7 +27,7 @@ function maandLabel(maand: string): string {
 }
 
 // Toont per maand van het HUIDIGE jaar: hoeveel offertes verstuurd, hoeveel
-// daarvan zijn doorgegaan (geaccepteerd) en de conversiegraad. Data uit
+// daarvan zijn doorgegaan (= GEFACTUREERD) en de conversiegraad. Data uit
 // getOfferteConversieDitJaar — per losse offerte (groep_id) geteld. Zelfde bron
 // als de dashboard-kop, dus het totaal hieronder is gelijk aan het kop-getal.
 export function ConversiePerMaandDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -76,7 +76,7 @@ export function ConversiePerMaandDialog({ open, onClose }: { open: boolean; onCl
               <p className="text-2xl font-bold text-gray-900 mt-1">{totConversie}%</p>
             </div>
           </div>
-          <p className="text-xs text-gray-400 mb-3">Huidig jaar · per losse offerte geteld</p>
+          <p className="text-xs text-gray-400 mb-3">Huidig jaar · per losse offerte geteld · doorgegaan = gefactureerd</p>
 
           <div className="overflow-x-auto">
             <table className="w-full text-sm">

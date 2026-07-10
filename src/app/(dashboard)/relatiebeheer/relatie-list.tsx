@@ -381,12 +381,9 @@ export function RelatieList({ relaties }: { relaties: Relatie[] }) {
               onClick={async () => {
                 if (!bulkMailDialog || !bulkOnderwerp.trim() || !bulkBericht.trim()) return
                 setBulkSending(true)
-                const result = await sendBroadcastEmail({
-                  type: 'selectie',
-                  onderwerp: bulkOnderwerp,
-                  bericht: bulkBericht,
-                  selectedIds: bulkMailDialog.ids,
-                })
+                // Positionele argumenten — de action verwacht (onderwerp, bericht,
+                // type, selectedIds); met ids gaat de mail alleen naar de selectie.
+                const result = await sendBroadcastEmail(bulkOnderwerp, bulkBericht, 'alle', bulkMailDialog.ids)
                 setBulkSending(false)
                 if ('error' in result && result.error) {
                   alert(result.error)

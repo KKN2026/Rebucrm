@@ -1,6 +1,7 @@
 'use client'
 
 import { useState, useMemo, useEffect } from 'react'
+import Link from 'next/link'
 import { PageHeader } from '@/components/ui/page-header'
 import { Card, CardContent } from '@/components/ui/card'
 import { formatCurrency } from '@/lib/utils'
@@ -117,13 +118,12 @@ export function RapportagesView({ facturen, inkoopfacturen, uren, funnel }: {
     return () => { actief = false }
   }, [tab, jaar])
 
-  // Filter facturen op geselecteerd jaar — sluit concept én status 'gecrediteerd' uit.
-  // Credit-nota's (factuur_type='credit') tellen WEL mee: hun subtotaal/totaal
-  // staan negatief in de DB, dus optellen geeft automatisch netto-omzet
-  // (gefactureerd minus credit). Status 'gecrediteerd' is een originele factuur
-  // die volledig is teruggedraaid — die zou de credit-nota dubbel laten meetellen.
+  // Filter facturen op geselecteerd jaar — sluit concept, status 'gecrediteerd'
+  // én credit-nota's uit. Zelfde definitie als het dashboard: bij crediteren
+  // valt het origineel weg (status 'gecrediteerd') en wordt de creditnota
+  // genegeerd — anders gaat hetzelfde bedrag dubbel van de omzet af.
   const UITGESLOTEN = ['concept', 'gecrediteerd']
-  const isOmzetFactuur = (f: Factuur) => !UITGESLOTEN.includes(f.status)
+  const isOmzetFactuur = (f: Factuur) => !UITGESLOTEN.includes(f.status) && f.factuur_type !== 'credit'
 
   const jaarFacturen = useMemo(() => {
     return facturen.filter(f => {
@@ -221,8 +221,10 @@ export function RapportagesView({ facturen, inkoopfacturen, uren, funnel }: {
       entry.omzet += f.subtotaal || 0
       entry.inclBtw += f.totaal || 0
       entry.aantal++
-      if (f.status === 'betaald') entry.betaald += f.subtotaal || 0
-      if (['verzonden', 'deels_betaald', 'vervallen'].includes(f.status)) entry.openstaand += f.subtotaal || 0
+      // Zelfde berekening als de KPI's/totaalrij (proportioneel excl. BTW),
+      // anders tellen de kolommen niet op tot de Totaal-rij bij deels betaalde facturen.
+      entry.betaald += betaaldPerFactuur(f)
+      if (['verzonden', 'deels_betaald', 'vervallen'].includes(f.status)) entry.openstaand += openstaandPerFactuur(f)
     }
     return [...map.values()].sort((a, b) => b.omzet - a.omzet)
   }, [jaarFacturen])
@@ -391,7 +393,7 @@ export function RapportagesView({ facturen, inkoopfacturen, uren, funnel }: {
                   const hoogte = maxMaandOmzet > 0 ? (m.omzet / maxMaandOmzet * 100) : 0
                   const isHuidig = jaar === huidigJaar && i === huidigeMaand
                   return (
-                    <div key={i} className="flex-1 flex flex-col items-center gap-1 group relative">
+                    <Link key={i} href={`/facturatie?periode=${jaar}-${String(i + 1).padStart(2, '0')}`} title={`Bekijk de facturen van ${m.naam} ${jaar}`} className="flex-1 flex flex-col items-center gap-1 group relative">
                       {/* Hover tooltip */}
                       {m.omzet > 0 && (
                         <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-[10px] px-2 py-1 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
@@ -411,7 +413,7 @@ export function RapportagesView({ facturen, inkoopfacturen, uren, funnel }: {
                         />
                       </div>
                       <span className={`text-[10px] ${isHuidig ? 'font-bold text-[#00a66e]' : 'text-gray-500'}`}>{m.naam}</span>
-                    </div>
+                    </Link>
                   )
                 })}
               </div>
@@ -432,10 +434,15 @@ export function RapportagesView({ facturen, inkoopfacturen, uren, funnel }: {
                   <tbody>
                     {maandData.map((m, i) => {
                       const isHuidig = jaar === huidigJaar && i === huidigeMaand
+                      const periodeHref = `/facturatie?periode=${jaar}-${String(i + 1).padStart(2, '0')}`
                       return (
                         <tr key={i} className={`border-b border-gray-100 ${isHuidig ? 'bg-blue-50 font-medium' : ''}`}>
-                          <td className="py-2">{m.naam} {jaar}</td>
-                          <td className="py-2 text-right">{m.aantal}</td>
+                          <td className="py-2">
+                            <Link href={periodeHref} className="hover:text-[#00a66e] hover:underline">{m.naam} {jaar}</Link>
+                          </td>
+                          <td className="py-2 text-right">
+                            <Link href={periodeHref} title={`Bekijk de ${m.aantal} facturen van ${m.naam} ${jaar}`} className="hover:text-[#00a66e] hover:underline">{m.aantal}</Link>
+                          </td>
                           <td className="py-2 text-right">{formatCurrency(m.omzet)}</td>
                           <td className="py-2 text-right text-gray-500">{formatCurrency(m.btw)}</td>
                           <td className="py-2 text-right">{formatCurrency(m.inclBtw)}</td>

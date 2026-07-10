@@ -10,27 +10,19 @@ import { createMolliePayment } from '@/lib/mollie'
 import { FACTUUR_OVERRIDE_EMBED, pasFactuurAdresToe } from '@/lib/factuur-adres'
 
 // === HELPER: genereer Mollie betaallink voor een factuur als die nog niet bestaat ===
+// Delegeert naar ensureFactuurBetaalLink, die óók verifieert dat een bestaande
+// link nog het juiste bedrag heeft (factuur kan gewijzigd zijn). Concepten
+// krijgen in het klantportaal geen link.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function zorgVoorBetaallinkAdmin(factuurId: string, sb: any): Promise<string | null> {
   try {
     const { data: f } = await sb.from('facturen')
-      .select('id, factuurnummer, totaal, betaald_bedrag, status, betaal_link')
+      .select('id, status')
       .eq('id', factuurId).single()
-    if (!f) return null
-    if (f.betaal_link) return f.betaal_link
-    if (['concept', 'gecrediteerd', 'geannuleerd'].includes(f.status)) return null
-    const openstaand = Number(f.totaal || 0) - Number(f.betaald_bedrag || 0)
-    if (openstaand <= 0) return null
-    if (!process.env.MOLLIE_API_KEY) return null
-    const appUrl = getAppUrl()
-    const payment = await createMolliePayment({
-      amount: openstaand,
-      description: `Factuur ${f.factuurnummer}`,
-      redirectUrl: `${appUrl}/betaling/succes`,
-      webhookUrl: `${appUrl}/api/mollie/webhook`,
-    })
-    await sb.from('facturen').update({ mollie_payment_id: payment.id, betaal_link: payment.checkoutUrl }).eq('id', f.id)
-    return payment.checkoutUrl
+    if (!f || f.status === 'concept') return null
+    const { ensureFactuurBetaalLink } = await import('@/lib/mollie')
+    const { link } = await ensureFactuurBetaalLink(factuurId)
+    return link
   } catch (err) {
     console.error('zorgVoorBetaallinkAdmin fout:', err)
     return null

@@ -5,7 +5,8 @@ import { getOfferteEmailDefaults, sendOfferteEmail, getLeverancierPdfData } from
 import { Card, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { RichTextEditor, plainTextToHtml } from '@/components/ui/rich-text-editor'
-import { Send, Download, Mail, Paperclip, Plus, X, Loader2, CheckCircle, Link2, ArrowLeft, FileText } from 'lucide-react'
+import { EmailOntvangers, combineerOntvangers, type EmailContactOptie } from '@/components/ui/email-ontvangers'
+import { Send, Download, Paperclip, Plus, X, Loader2, CheckCircle, Link2, ArrowLeft, FileText } from 'lucide-react'
 
 export function StapVersturen({
   offerteId,
@@ -20,7 +21,12 @@ export function StapVersturen({
 }) {
   const [loading, setLoading] = useState(true)
   const [sending, setSending] = useState(false)
-  const [emailTo, setEmailTo] = useState('')
+  // Ontvangers: aan te vinken contactpersonen van de relatie + vrij veld voor
+  // losse adressen. Meerdere contactpersonen tegelijk kan.
+  const [contacten, setContacten] = useState<EmailContactOptie[]>([])
+  const [gekozenEmails, setGekozenEmails] = useState<string[]>([])
+  const [extraEmail, setExtraEmail] = useState('')
+  const [verzondenNaar, setVerzondenNaar] = useState('')
   const [emailSubject, setEmailSubject] = useState('')
   const [emailBody, setEmailBody] = useState('')
   const [emailAttachments, setEmailAttachments] = useState<File[]>([])
@@ -39,7 +45,18 @@ export function StapVersturen({
       if (defaults.error) {
         setError(defaults.error)
       } else {
-        setEmailTo(defaults.to || '')
+        const opties = (defaults.contacten || []) as EmailContactOptie[]
+        setContacten(opties)
+        // Voorselectie: het standaard-adres als het tussen de contacten staat,
+        // anders in het vrije veld zodat er altijd een ontvanger klaarstaat.
+        const standaard = (defaults.to || '').trim()
+        if (standaard && opties.some(c => c.email.toLowerCase() === standaard.toLowerCase())) {
+          setGekozenEmails([opties.find(c => c.email.toLowerCase() === standaard.toLowerCase())!.email])
+        } else if (standaard) {
+          setExtraEmail(standaard)
+        } else if (opties.length === 1) {
+          setGekozenEmails([opties[0].email])
+        }
         setEmailSubject(defaults.subject || '')
         setEmailBody(plainTextToHtml(defaults.body || ''))
       }
@@ -48,9 +65,12 @@ export function StapVersturen({
     })
   }, [offerteId])
 
+  const ontvangers = combineerOntvangers(gekozenEmails, extraEmail)
+
   async function handleSendEmail() {
     setSending(true)
     setError('')
+    setVerzondenNaar(ontvangers.join(', '))
 
     const extraBijlagen: { filename: string; content: string }[] = []
     for (const file of emailAttachments) {
@@ -66,7 +86,7 @@ export function StapVersturen({
     }
 
     const result = await sendOfferteEmail(offerteId, {
-      to: emailTo,
+      to: ontvangers,
       subject: emailSubject,
       body: emailBody,
       extraBijlagen: extraBijlagen.length > 0 ? extraBijlagen : undefined,
@@ -105,7 +125,7 @@ export function StapVersturen({
           <CheckCircle className="h-8 w-8 text-green-600" />
         </div>
         <h2 className="text-xl font-semibold text-gray-900 mb-2">Offerte verstuurd!</h2>
-        <p className="text-gray-600 mb-6">De offerte is succesvol verzonden naar {emailTo}</p>
+        <p className="text-gray-600 mb-6">De offerte is succesvol verzonden naar {verzondenNaar}</p>
 
         {sentLink && (
           <div className="bg-gray-50 rounded-lg p-4 mb-6 inline-block">
@@ -136,7 +156,7 @@ export function StapVersturen({
             </a>
           )}
           <Button onClick={onDone}>
-            Ga naar offertes
+            Terug naar offerte
           </Button>
         </div>
       </div>
@@ -205,20 +225,13 @@ export function StapVersturen({
         <CardContent className="pt-6 space-y-4">
           <h3 className="font-semibold text-gray-900">Email samenstellen</h3>
 
-          <div>
-            <label htmlFor="email_to" className="block text-sm font-medium text-gray-700 mb-1">
-              <Mail className="h-3.5 w-3.5 inline mr-1" />
-              Aan
-            </label>
-            <input
-              id="email_to"
-              type="email"
-              value={emailTo}
-              onChange={e => setEmailTo(e.target.value)}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
-              placeholder="E-mailadres ontvanger"
-            />
-          </div>
+          <EmailOntvangers
+            contacten={contacten}
+            geselecteerd={gekozenEmails}
+            onToggle={email => setGekozenEmails(prev => prev.includes(email) ? prev.filter(e => e !== email) : [...prev, email])}
+            extra={extraEmail}
+            onExtraChange={setExtraEmail}
+          />
 
           <div>
             <label htmlFor="email_subject" className="block text-sm font-medium text-gray-700 mb-1">Onderwerp</label>
@@ -279,7 +292,7 @@ export function StapVersturen({
           </div>
 
           <div className="flex justify-end gap-2 pt-4 border-t border-gray-200">
-            <Button onClick={handleSendEmail} disabled={sending || !emailTo}>
+            <Button onClick={handleSendEmail} disabled={sending || ontvangers.length === 0}>
               {sending ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (

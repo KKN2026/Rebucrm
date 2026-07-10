@@ -6,7 +6,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { formatCurrency } from '@/lib/utils'
-import { FileText, Truck, Receipt, Target, ChevronDown, ChevronUp, Pencil, AlertTriangle, ArrowRight, DollarSign, TrendingUp, CheckSquare, Bell, ShoppingCart, Clock, Calendar, Users, FolderKanban, Mail, Trash2, MessageCircle, ArrowUpRight, ArrowDownRight, Send, EyeOff, Calculator } from 'lucide-react'
+import { FileText, Truck, Receipt, Target, ChevronDown, ChevronUp, Pencil, AlertTriangle, ArrowRight, DollarSign, TrendingUp, CheckSquare, Bell, ShoppingCart, Clock, Calendar, FolderKanban, Mail, Trash2, MessageCircle, ArrowUpRight, ArrowDownRight, Send, EyeOff, Calculator } from 'lucide-react'
 import { format, getISOWeek } from 'date-fns'
 import { nl } from 'date-fns/locale'
 import { useRouter } from 'next/navigation'
@@ -14,6 +14,7 @@ import { convertToFactuur, saveOmzetdoelen, markOrderBesteld, completeTaak, dele
 import { DeliveryPlanningDialog, type PlanOrder } from './delivery-planning-dialog'
 import { type FunnelData } from '@/components/dashboard/conversie-funnel-dashboard'
 import { ConversiePerMaandDialog } from '@/components/dashboard/conversie-per-maand-dialog'
+import { VerwachteOmzetChart } from '@/components/dashboard/verwachte-omzet-chart'
 
 interface TePlannenOrder {
   id: string
@@ -78,7 +79,6 @@ interface DashboardData {
   organisaties: { totaal: number; particulier: number; zakelijk: number }
   offertesPerFase: { status: string; aantal: number; bedrag: number }[]
   facturenPerFase: { status: string; aantal: number; bedrag: number }[]
-  takenPerCollega: { naam: string; profiel_id: string; aantal: number; bellen: number; uitwerken: number; perTitel: { titel: string; aantal: number }[] }[]
   mijnTaken: { id: string; titel: string; deadline: string | null; prioriteit: string; toegewezen_naam: string | null; bedrag: number | null; relatie_id: string | null; relatie_naam: string | null }[]
   openOffertesList: {
     id: string
@@ -347,58 +347,6 @@ function Section({ title, icon: Icon, iconColor, count, children, defaultOpen, l
         </div>
       )}
     </div>
-  )
-}
-
-function categoriseerTaak(titel: string): 'bellen' | 'uitwerken' {
-  const t = titel.toLowerCase()
-  if (t.includes('bellen') || t.includes('opbellen') || t.includes('nabellen')) return 'bellen'
-  return 'uitwerken'
-}
-
-function TakenPerCollegaSection({ data }: { data: DashboardData['takenPerCollega'] }) {
-  const [selected, setSelected] = useState<string | null>(null)
-  const totaal = data.reduce((s, c) => s + c.aantal, 0)
-  const selectedCollega = data.find(c => c.profiel_id === selected)
-
-  // Categorie-cijfers komen direct uit de server (categorie-veld op taken)
-  const categorieën = selectedCollega ? [
-    { key: 'uitwerken' as const, label: 'Uitwerken', aantal: selectedCollega.uitwerken },
-    { key: 'bellen' as const, label: 'Bellen', aantal: selectedCollega.bellen },
-  ].filter(c => c.aantal > 0) : []
-
-  return (
-    <Section title="Taken per collega" icon={Users} iconColor="bg-violet-50 text-violet-600" count={totaal} linkHref="/taken" linkLabel="Alle taken" accentColor="bg-violet-100 text-violet-700">
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-px bg-gray-100">
-        {data.map(c => (
-          <button
-            key={c.profiel_id}
-            onClick={() => setSelected(selected === c.profiel_id ? null : c.profiel_id)}
-            className={`text-left px-4 py-3 transition-colors ${selected === c.profiel_id ? 'bg-[#00a66e] text-white' : 'bg-white hover:bg-gray-50'}`}
-          >
-            <p className={`text-xs truncate ${selected === c.profiel_id ? 'text-white/80' : 'text-gray-500'}`}>{c.naam}</p>
-            <p className={`text-xl font-bold mt-0.5 ${selected === c.profiel_id ? 'text-white' : 'text-gray-900'}`}>{c.aantal}</p>
-          </button>
-        ))}
-      </div>
-      {selectedCollega && (
-        <div className="border-t border-gray-100 px-4 sm:px-5 py-3">
-          <p className="text-[11px] font-medium text-gray-400 uppercase tracking-wider mb-2">Taken van {selectedCollega.naam}</p>
-          <div className="grid grid-cols-2 gap-2">
-            {categorieën.map(cat => (
-              <Link
-                key={cat.key}
-                href={`/taken?collega=${selectedCollega.profiel_id}&categorie=${cat.key}`}
-                className="bg-gray-50 hover:bg-gray-100 rounded-lg px-4 py-3 transition-colors block"
-              >
-                <p className="text-xs text-gray-500">{cat.label}</p>
-                <p className="text-2xl font-bold text-gray-900">{cat.aantal}</p>
-              </Link>
-            ))}
-          </div>
-        </div>
-      )}
-    </Section>
   )
 }
 
@@ -692,8 +640,8 @@ export function DashboardView({ data }: { data: DashboardData | null }) {
 
       {/* KPI rij — moderner, royaler, icoon RECHTS in pastel cirkel (Houter-stijl) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
-        {/* Omzet */}
-        <Link href="/facturatie" className="block group">
+        {/* Omzet — klik toont exact de facturen waaruit dit bedrag is opgebouwd */}
+        <Link href={`/facturatie?periode=${new Date().toISOString().slice(0, 7)}`} className="block group">
           <div className="relative bg-white rounded-2xl border border-gray-100 p-6 group-hover:border-gray-200 group-hover:shadow-sm transition-all overflow-hidden">
             <div className="absolute top-0 left-0 h-1 w-full bg-gradient-to-r from-[#00a66e] to-emerald-400" />
             <div className="flex items-start justify-between gap-3">
@@ -745,7 +693,7 @@ export function DashboardView({ data }: { data: DashboardData | null }) {
               <div className="min-w-0">
                 <p className="text-xs font-medium text-gray-500 uppercase tracking-wider">Conversie</p>
                 <p className="text-2xl sm:text-3xl font-bold text-gray-900 mt-2 tracking-tight">{conversieGraad}%</p>
-                <p className="text-xs text-gray-400 mt-2">{data.conversieDitJaar?.geaccepteerdAantal ?? 0} van {data.conversieDitJaar?.verstuurdAantal ?? 0} offertes ({data.conversieDitJaar?.jaar ?? new Date().getFullYear()})</p>
+                <p className="text-xs text-gray-400 mt-2">{data.conversieDitJaar?.geaccepteerdAantal ?? 0} van {data.conversieDitJaar?.verstuurdAantal ?? 0} offertes gefactureerd ({data.conversieDitJaar?.jaar ?? new Date().getFullYear()})</p>
               </div>
               <div className="h-12 w-12 rounded-full bg-violet-50 flex items-center justify-center shrink-0">
                 <TrendingUp className="h-5 w-5 text-violet-600" />
@@ -823,6 +771,9 @@ export function DashboardView({ data }: { data: DashboardData | null }) {
 
       {/* Conversie-funnel staat op /rapportages — niet meer op dashboard om
           drukte te beperken. */}
+
+      {/* Verwachte omzet per maand o.b.v. valdatum van offertes */}
+      <VerwachteOmzetChart />
 
       {/* Omzetdoelen - mobiel (boven secties) */}
       <div className="lg:hidden">
@@ -1441,10 +1392,8 @@ export function DashboardView({ data }: { data: DashboardData | null }) {
             </Section>
           )}
 
-          {/* Openstaande taken per collega */}
-          {data.takenPerCollega.length > 0 && (
-            <TakenPerCollegaSection data={data.takenPerCollega} />
-          )}
+          {/* 'Taken per collega' is verhuisd naar de taken-pagina (/taken) —
+              daar wordt hij uit dezelfde lijst geteld als de tabel eronder. */}
 
           {/* 7. Mijn taken */}
           {(() => {
