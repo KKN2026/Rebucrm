@@ -2588,6 +2588,29 @@ export async function sendFactuurEmail(factuurId: string, options: {
   const openstaandBedrag = Number(factuur.totaal || 0) - Number(factuur.betaald_bedrag || 0)
   const huidigeBetaalLink = (factuur.betaal_link as string | null) || null
 
+  // Verzenden maakt van een concept een definitieve factuur. Dat moet VÓÓR het
+  // renderen van de PDF gebeuren: anders krijgt de klant een bijlage met
+  // 'CONCEPT FACTUUR' erop en zonder factuur-/vervaldatum. Concept-facturen
+  // krijgen pas hun datum bij verzending — daarvóór is de factuur nog geen feit.
+  // Vervaldatum: standaard 7 dagen; een handmatig ingestelde termijn (verschil
+  // oude datum/vervaldatum) blijft leidend. DB-update volgt ná succesvol mailen.
+  const factuurUpdate: Record<string, unknown> = { status: 'verzonden' }
+  if (factuur.status === 'concept') {
+    const vandaag = new Date().toISOString().slice(0, 10)
+    factuurUpdate.datum = vandaag
+    const oudeDatum = factuur.datum ? new Date(factuur.datum) : null
+    const oudeVervaldatum = factuur.vervaldatum ? new Date(factuur.vervaldatum) : null
+    let dagenTermijn = 7
+    if (oudeDatum && oudeVervaldatum) {
+      const diff = Math.round((oudeVervaldatum.getTime() - oudeDatum.getTime()) / (1000 * 60 * 60 * 24))
+      if (diff > 0 && diff <= 90) dagenTermijn = diff
+    }
+    factuurUpdate.vervaldatum = new Date(Date.now() + dagenTermijn * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    factuur.status = 'verzonden'
+    factuur.datum = factuurUpdate.datum
+    factuur.vervaldatum = factuurUpdate.vervaldatum
+  }
+
   // PARALLEL: Mollie betaal-link aanmaken (indien nodig) + Factuur-PDF renderen.
   // Eerder gebeurde dit sequentieel waardoor versturen 5–10s duurde. Beide
   // takken zijn idempotent en kunnen tegelijk lopen.
@@ -2676,25 +2699,8 @@ export async function sendFactuurEmail(factuurId: string, options: {
     return { error: 'E-mail verzenden mislukt' }
   }
 
-  // Update status naar verzonden. Concept-facturen krijgen pas hun datum bij
-  // verzending — daarvóór hebben ze geen datum (factuur is nog geen feit).
-  // Vervaldatum wordt afgeleid van het factuur_type, of van een handmatig
-  // ingestelde verval (verschil oude datum/vervaldatum behouden).
-  const factuurUpdate: Record<string, unknown> = { status: 'verzonden' }
-  if (factuur.status === 'concept') {
-    const vandaag = new Date().toISOString().slice(0, 10)
-    factuurUpdate.datum = vandaag
-    const oudeDatum = factuur.datum ? new Date(factuur.datum) : null
-    const oudeVervaldatum = factuur.vervaldatum ? new Date(factuur.vervaldatum) : null
-    // Standaard betalingstermijn = 7 dagen voor alle facturen. Een handmatig
-    // ingestelde vervaldatum (verschil oude datum/vervaldatum) blijft leidend.
-    let dagenTermijn = 7
-    if (oudeDatum && oudeVervaldatum) {
-      const diff = Math.round((oudeVervaldatum.getTime() - oudeDatum.getTime()) / (1000 * 60 * 60 * 24))
-      if (diff > 0 && diff <= 90) dagenTermijn = diff
-    }
-    factuurUpdate.vervaldatum = new Date(Date.now() + dagenTermijn * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  }
+  // Status/datum zijn hierboven al bepaald (vóór de PDF-render) — nu pas
+  // persisteren, zodat een mislukte mail de factuur niet op 'verzonden' zet.
   await supabase.from('facturen').update(factuurUpdate).eq('id', factuurId)
 
   // "Gefactureerd → opvolgtaak klaar": rond de open opvolgtaak van deze
