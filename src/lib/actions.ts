@@ -2549,6 +2549,10 @@ export async function sendFactuurEmail(factuurId: string, options: {
   body: string
   extraBijlagen?: { filename: string; content: string }[]
   skipSnelStart?: boolean
+  bcc?: string[]
+  // Herzending van een eerder verstuurde factuur: alleen de mail gaat opnieuw
+  // uit — status/datum, opvolgtaken en orders blijven onaangeroerd.
+  herzending?: boolean
 }) {
   const supabase = await createClient()
   const supabaseAdmin2 = createAdminClient()
@@ -2594,8 +2598,8 @@ export async function sendFactuurEmail(factuurId: string, options: {
   // krijgen pas hun datum bij verzending — daarvóór is de factuur nog geen feit.
   // Vervaldatum: standaard 7 dagen; een handmatig ingestelde termijn (verschil
   // oude datum/vervaldatum) blijft leidend. DB-update volgt ná succesvol mailen.
-  const factuurUpdate: Record<string, unknown> = { status: 'verzonden' }
-  if (factuur.status === 'concept') {
+  const factuurUpdate: Record<string, unknown> | null = options.herzending ? null : { status: 'verzonden' }
+  if (factuurUpdate && factuur.status === 'concept') {
     const vandaag = new Date().toISOString().slice(0, 10)
     factuurUpdate.datum = vandaag
     const oudeDatum = factuur.datum ? new Date(factuur.datum) : null
@@ -2654,9 +2658,13 @@ export async function sendFactuurEmail(factuurId: string, options: {
   // ophaalt (of een verse genereert als de huidige verlopen is).
   const baseUrl = getAppUrl()
   const publiekToken = (factuur as { publiek_token?: string | null }).publiek_token
-  const ctaLink = betaalLink && publiekToken
-    ? `${baseUrl}/api/factuur/${publiekToken}/betaal`
-    : (betaalLink || undefined)
+  // Geen betaalknop als er niets (meer) open staat — bv. bij herzending van
+  // een al betaalde factuur.
+  const ctaLink = openstaandBedrag > 0.01
+    ? (betaalLink && publiekToken
+      ? `${baseUrl}/api/factuur/${publiekToken}/betaal`
+      : (betaalLink || undefined))
+    : undefined
   const emailHtml = buildFactuurEmailHtml({
     body: options.body,
     factuurnummer: factuur.factuurnummer as string,
@@ -2684,6 +2692,7 @@ export async function sendFactuurEmail(factuurId: string, options: {
     const eigenMailbox = mwInfo?.email && EIGEN_MAILBOX_EMAILS.has(mwInfo.email.toLowerCase())
     await sendEmail({
       to: ontvangers,
+      bcc: options.bcc,
       subject: options.subject,
       html: emailHtml,
       attachments: attachments.map(a => ({
@@ -2701,13 +2710,14 @@ export async function sendFactuurEmail(factuurId: string, options: {
 
   // Status/datum zijn hierboven al bepaald (vóór de PDF-render) — nu pas
   // persisteren, zodat een mislukte mail de factuur niet op 'verzonden' zet.
-  await supabase.from('facturen').update(factuurUpdate).eq('id', factuurId)
+  // Bij een herzending (factuurUpdate=null) blijft de factuur onaangeroerd.
+  if (factuurUpdate) await supabase.from('facturen').update(factuurUpdate).eq('id', factuurId)
 
   // "Gefactureerd → opvolgtaak klaar": rond de open opvolgtaak van deze
   // verkoopkans af zodra de factuur verstuurd is. De verkoopkans schuift dan
   // vanzelf naar de 'factuur'-fase (zie getVerkoopkansenPipeline).
   try {
-    const offerteIdVoorTaak = (factuur as { offerte_id?: string | null }).offerte_id
+    const offerteIdVoorTaak = options.herzending ? null : (factuur as { offerte_id?: string | null }).offerte_id
     if (offerteIdVoorTaak) {
       const { data: off } = await supabaseAdmin2.from('offertes').select('project_id').eq('id', offerteIdVoorTaak).maybeSingle()
       if (off?.project_id) {
@@ -2735,12 +2745,13 @@ export async function sendFactuurEmail(factuurId: string, options: {
         totaal: factuur.totaal,
         openstaand: openstaandBedrag,
         mollieLink: !!betaalLink,
+        ...(options.herzending ? { herzending: true } : {}),
       },
     })
   } catch { /* niet kritiek */ }
 
   // Als deze factuur aan een order gekoppeld is die wacht op betaling → activeer de order (te plannen leveringen)
-  if (factuur.order_id) {
+  if (factuur.order_id && !options.herzending) {
     const { data: linkedOrder } = await supabase
       .from('orders')
       .select('id, status')
