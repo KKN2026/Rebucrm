@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
 import { getVerwachteOmzetPerMaand } from '@/lib/actions'
 import { formatCurrency } from '@/lib/utils'
 import { Loader2, ChevronLeft, ChevronRight } from 'lucide-react'
@@ -22,6 +23,7 @@ const MAAND_NAMEN = ['Jan', 'Feb', 'Mrt', 'Apr', 'Mei', 'Jun', 'Jul', 'Aug', 'Se
 // BTW, laatste versie per offerte-groep). Gestapelde staaf: geaccepteerd
 // (gewonnen, zeker) + verzonden (open, klant beslist nog).
 export function VerwachteOmzetChart() {
+  const router = useRouter()
   const [jaar, setJaar] = useState(new Date().getFullYear())
   const [data, setData] = useState<MaandData[]>([])
   // Loading afgeleid van "welk jaar is geladen" — geen synchrone setState in
@@ -100,12 +102,19 @@ export function VerwachteOmzetChart() {
                 const chartHeight = 193
                 const gewonnenH = Math.round((d.gewonnen / maxValue) * chartHeight)
                 const openH = Math.round((d.open / maxValue) * chartHeight)
+                const maandParam = `${jaar}-${String(d.maand).padStart(2, '0')}`
+                const klikbaar = d.totaal > 0
                 return (
                   <div
                     key={d.maand}
-                    className="flex-1 relative cursor-pointer group"
+                    className={`flex-1 relative group ${klikbaar ? 'cursor-pointer' : ''}`}
                     onMouseEnter={() => setHoverIdx(i)}
                     onMouseLeave={() => setHoverIdx(null)}
+                    onClick={klikbaar ? () => router.push(`/offertes?valmaand=${maandParam}`) : undefined}
+                    role={klikbaar ? 'button' : undefined}
+                    tabIndex={klikbaar ? 0 : undefined}
+                    onKeyDown={klikbaar ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); router.push(`/offertes?valmaand=${maandParam}`) } } : undefined}
+                    aria-label={klikbaar ? `Bekijk offertes met verwachte valdatum in ${MAAND_NAMEN[d.maand - 1]} ${jaar}` : undefined}
                   >
                     {isHover && d.totaal > 0 && (
                       <div className={`absolute bottom-full mb-2 z-10 bg-gray-900 text-white text-xs rounded-md px-2.5 py-2 shadow-lg min-w-[190px] ${i < 3 ? 'left-0' : i > 8 ? 'right-0' : 'left-1/2 -translate-x-1/2'}`}>
@@ -118,6 +127,7 @@ export function VerwachteOmzetChart() {
                           </div>
                         ))}
                         {d.offertes.length > 5 && <div className="text-gray-400">+ {d.offertes.length - 5} meer</div>}
+                        <div className="mt-1.5 pt-1.5 border-t border-white/15 text-[10px] text-gray-400">Klik om deze offertes te bekijken</div>
                       </div>
                     )}
                     <div className="absolute inset-x-1 bottom-0 flex flex-col-reverse">

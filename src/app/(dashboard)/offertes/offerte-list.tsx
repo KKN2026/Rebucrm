@@ -11,11 +11,20 @@ import { Badge } from '@/components/ui/badge'
 import { EmptyState } from '@/components/ui/empty-state'
 import { formatCurrency, formatDateShort } from '@/lib/utils'
 import { offerteStatussen, statusKleuren } from '@/lib/constants'
-import { Plus, FileText, Download } from 'lucide-react'
+import { Plus, FileText, Download, X } from 'lucide-react'
 
 const statusLabels: Record<string, string> = {
   concept: 'Concept', verzonden: 'Verzonden', geaccepteerd: 'Geaccepteerd',
   afgewezen: 'Afgewezen', verlopen: 'Verlopen',
+}
+
+const MAAND_NAMEN = ['januari', 'februari', 'maart', 'april', 'mei', 'juni', 'juli', 'augustus', 'september', 'oktober', 'november', 'december']
+
+// Label 'YYYY-MM' → 'augustus 2026' voor de valmaand-filterbanner.
+function maandLabel(valmaand: string): string {
+  const [jaar, maand] = valmaand.split('-')
+  const idx = parseInt(maand, 10) - 1
+  return `${MAAND_NAMEN[idx] || maand} ${jaar}`
 }
 
 interface Offerte {
@@ -27,6 +36,7 @@ interface Offerte {
   subtotaal: number | null
   btw_totaal: number | null
   versie_nummer: number | null
+  verwachte_valdatum: string | null
   relatie: { bedrijfsnaam: string } | null
   project: { naam: string } | null
   onderwerp: string | null
@@ -73,13 +83,20 @@ const columns: ColumnDef<Offerte, unknown>[] = [
   },
 ]
 
-export function OfferteList({ offertes }: { offertes: Offerte[] }) {
+export function OfferteList({ offertes, valmaand }: { offertes: Offerte[]; valmaand?: string }) {
   const router = useRouter()
   const [statusFilter, setStatusFilter] = useState<string | null>(null)
 
-  const filteredOffertes = statusFilter
-    ? offertes.filter(o => o.status === statusFilter)
+  // Valmaand-filter komt uit de doorklik op de omzet-prognosegrafiek
+  // (/offertes?valmaand=YYYY-MM). Toont de offertes met verwachte valdatum in
+  // die maand — precies de offertes achter die staaf.
+  const maandOffertes = valmaand
+    ? offertes.filter(o => (o.verwachte_valdatum || '').startsWith(valmaand))
     : offertes
+
+  const filteredOffertes = statusFilter
+    ? maandOffertes.filter(o => o.status === statusFilter)
+    : maandOffertes
 
   async function exportXlsx() {
     if (filteredOffertes.length === 0) return
@@ -141,6 +158,21 @@ export function OfferteList({ offertes }: { offertes: Offerte[] }) {
         />
       ) : (
         <>
+          {valmaand && (
+            <div className="mb-4 flex items-center gap-2 rounded-lg bg-emerald-50 border border-emerald-200 px-3 py-2 text-sm text-emerald-800">
+              <span>
+                Offertes met verwachte valdatum in <strong>{maandLabel(valmaand)}</strong>
+                <span className="text-emerald-600"> · {maandOffertes.length} st. · {formatCurrency(maandOffertes.reduce((s, o) => s + (o.subtotaal ?? ((o.totaal || 0) - (o.btw_totaal || 0))), 0))} excl. BTW</span>
+              </span>
+              <button
+                onClick={() => { setStatusFilter(null); router.push('/offertes') }}
+                className="ml-auto inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+              >
+                <X className="h-3.5 w-3.5" />
+                Filter wissen
+              </button>
+            </div>
+          )}
           <div className="mb-4 flex flex-wrap gap-2">
             <button
               onClick={() => setStatusFilter(null)}
@@ -150,10 +182,10 @@ export function OfferteList({ offertes }: { offertes: Offerte[] }) {
                   : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
               }`}
             >
-              Alle ({offertes.length})
+              Alle ({maandOffertes.length})
             </button>
             {offerteStatussen.map(status => {
-              const count = offertes.filter(o => o.status === status).length
+              const count = maandOffertes.filter(o => o.status === status).length
               if (count === 0) return null
               return (
                 <button
