@@ -4281,9 +4281,12 @@ export async function setProjectStatus(projectId: string, status: string) {
   const { data: huidig } = await supabase.from('projecten').select('status, naam').eq('id', projectId).maybeSingle()
   const { error } = await supabase.from('projecten').update({ status }).eq('id', projectId)
   if (error) return { error: error.message }
-  // Verkoopkans afgerond → open taken van deze kans ook afronden: de deal is
-  // klaar, dus opvolg-/offerte-taken hoeven niet meer open te staan.
-  if (status === 'afgerond') {
+  // Verkoopkans afgesloten (gewonnen/verloren/vervallen/afgerond/geannuleerd)
+  // → open taken van deze kans ook afronden: de deal is beslist, dus
+  // opvolg-/offerte-taken hoeven niet meer open te staan. Alleen 'actief' en
+  // 'on_hold' zijn nog lopend; daarbij blijven de taken staan.
+  const AFGESLOTEN_STATUSSEN = new Set(['afgerond', 'gewonnen', 'verloren', 'vervallen', 'geannuleerd'])
+  if (AFGESLOTEN_STATUSSEN.has(status)) {
     await supabase.from('taken').update({ status: 'afgerond' }).eq('project_id', projectId).neq('status', 'afgerond')
     revalidatePath('/taken')
   }
@@ -8868,7 +8871,7 @@ export async function saveProjectNotitie(data: { id?: string; project_id: string
 
 // === GLOBAL SEARCH ===
 export async function globalSearch(query: string) {
-  if (!query || query.trim().length < 2) return { relaties: [], offertes: [], projecten: [] }
+  if (!query || query.trim().length < 2) return { relaties: [], offertes: [], projecten: [], facturen: [] }
 
   const supabase = await createClient()
   const trimmed = query.trim()
@@ -8887,32 +8890,45 @@ export async function globalSearch(query: string) {
     `contactpersoon.ilike.${searchTerm}`,
     `email.ilike.${searchTerm}`,
     `telefoon.ilike.${searchTerm}`,
+    // Adres-zoeken: straatnaam, postcode én plaats.
+    `adres.ilike.${searchTerm}`,
+    `postcode.ilike.${searchTerm}`,
+    `plaats.ilike.${searchTerm}`,
   ]
   if (digitsTerm) relatieFilters.push(`telefoon.ilike.${digitsTerm}`)
   if (digitsLooseTerm) relatieFilters.push(`telefoon.ilike.${digitsLooseTerm}`)
 
-  const [relatiesRes, offertesRes, projectenRes] = await Promise.all([
+  // Cijferreeks in de zoekterm (bv. "325" of "00325") matcht ook factuur-/
+  // offertenummers zoals F-2026-00325 / OFF-2768 — searchTerm doet dat al via
+  // ilike, dus geen aparte behandeling nodig.
+  const [relatiesRes, offertesRes, projectenRes, facturenRes] = await Promise.all([
     supabase
       .from('relaties')
-      .select('id, bedrijfsnaam, contactpersoon, plaats, email, telefoon')
+      .select('id, bedrijfsnaam, contactpersoon, adres, postcode, plaats, email, telefoon')
       .or(relatieFilters.join(','))
-      .limit(5),
+      .limit(6),
     supabase
       .from('offertes')
       .select('id, offertenummer, onderwerp, status, relatie:relaties(bedrijfsnaam)')
       .or(`offertenummer.ilike.${searchTerm},onderwerp.ilike.${searchTerm}`)
-      .limit(5),
+      .limit(6),
     supabase
       .from('projecten')
       .select('id, naam, status, relatie:relaties(bedrijfsnaam)')
       .ilike('naam', searchTerm)
-      .limit(5),
+      .limit(6),
+    supabase
+      .from('facturen')
+      .select('id, factuurnummer, onderwerp, status, totaal, relatie:relaties(bedrijfsnaam)')
+      .or(`factuurnummer.ilike.${searchTerm},onderwerp.ilike.${searchTerm}`)
+      .limit(6),
   ])
 
   return {
     relaties: relatiesRes.data || [],
     offertes: offertesRes.data || [],
     projecten: projectenRes.data || [],
+    facturen: facturenRes.data || [],
   }
 }
 
