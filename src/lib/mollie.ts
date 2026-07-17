@@ -108,6 +108,11 @@ export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const link: any = await (mollie as any).paymentLinks.get(plId)
         if (link?.paidAt) return true // al betaald — nooit vervangen
+        // Verlopen (of binnen 2 dagen vervallend) → niet meer geldig, zodat we
+        // een verse 30-daagse link meesturen i.p.v. een link die de klant vlak
+        // na ontvangst op 'Deze betaallink is verlopen' laat stuiten.
+        const expiresAt = link?.expiresAt ? new Date(link.expiresAt).getTime() : null
+        if (expiresAt !== null && expiresAt <= Date.now() + 2 * 24 * 60 * 60 * 1000) return false
         const linkBedrag = parseFloat(link?.amount?.value || '0')
         return Math.abs(linkBedrag - openstaand) < 0.005
       } catch {
@@ -179,11 +184,19 @@ export async function getMolliePaymentStatus(paymentId: string) {
     // gebruikt, wat ALTIJD undefined was → de factuur werd nooit als betaald
     // gemarkeerd (ook niet door de safety-net cron).
     const isBetaald = Boolean(link.paidAt) || paidAmount > 0
+    // Payment Links hebben een `expiresAt`. Na die datum toont Mollie de klant
+    // 'Deze betaallink is verlopen' — maar het link-object blijft opvraagbaar
+    // en meldt geen aparte verval-status. We leiden verval dus zelf af zodat
+    // de aanroepers (betaal-route + ensureFactuurBetaalLink) een verse link
+    // kunnen genereren i.p.v. de klant naar een dode pagina te sturen.
+    const expiresAt: Date | null = link.expiresAt ? new Date(link.expiresAt) : null
+    const isExpired = !isBetaald && expiresAt !== null && expiresAt.getTime() <= Date.now()
     return {
       id: link.id as string,
-      status: (isBetaald ? 'paid' : 'open') as string,
+      status: (isBetaald ? 'paid' : isExpired ? 'expired' : 'open') as string,
       amount: paidAmount > 0 ? paidAmount : parseFloat(link.amount?.value || '0'),
       paidAt,
+      expiresAt,
     }
   }
 
@@ -193,5 +206,6 @@ export async function getMolliePaymentStatus(paymentId: string) {
     status: payment.status,
     amount: parseFloat(payment.amount.value),
     paidAt: payment.paidAt,
+    expiresAt: (payment as { expiresAt?: string | null }).expiresAt ? new Date((payment as { expiresAt?: string | null }).expiresAt as string) : null,
   }
 }

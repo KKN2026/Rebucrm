@@ -32,15 +32,17 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
   let betaalLink = factuur.betaal_link
 
   // Verifieer dat de opgeslagen Mollie-link nog werkt én het juiste bedrag
-  // heeft. Als hij verlopen is, het ID van het oude Payments-type (tr_…) is,
-  // of het linkbedrag afwijkt van het openstaande bedrag (factuur gewijzigd
-  // ná aanmaken van de link) — maak een nieuwe.
+  // heeft. Als hij verlopen is (status 'expired'), het ID van het oude
+  // Payments-type (tr_…) is, of het linkbedrag afwijkt van het openstaande
+  // bedrag (factuur gewijzigd ná aanmaken van de link) — maak een nieuwe.
   const needsNew = await (async () => {
     if (!betaalLink || !factuur.mollie_payment_id) return true
     if (!factuur.mollie_payment_id.startsWith('pl_')) return true
     try {
       const { getMolliePaymentStatus } = await import('@/lib/mollie')
       const status = await getMolliePaymentStatus(factuur.mollie_payment_id)
+      // Alleen een openstaande, niet-verlopen link met het juiste bedrag mag
+      // hergebruikt worden. Verlopen ('expired') valt hier automatisch onder.
       if (status.status !== 'open' && status.status !== 'paid') return true
       return status.status === 'open' && Math.abs(status.amount - openstaand) > 0.005
     } catch {
