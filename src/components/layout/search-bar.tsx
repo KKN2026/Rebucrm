@@ -2,15 +2,19 @@
 
 import { useState, useRef, useEffect, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
-import { Search, Users, FileText, FolderKanban, CheckSquare, Mail, Phone, Clock } from 'lucide-react'
+import { Search, Users, FileText, FolderKanban, CheckSquare, Mail, Phone, Clock, Receipt, MapPin } from 'lucide-react'
 import { globalSearch } from '@/lib/actions'
+import { formatCurrency } from '@/lib/utils'
 import { getRecentVisits, type RecentVisit } from '@/lib/recent-visits'
 
 interface SearchResults {
-  relaties: { id: string; bedrijfsnaam: string; contactpersoon: string | null; plaats: string | null; email: string | null; telefoon: string | null }[]
+  relaties: { id: string; bedrijfsnaam: string; contactpersoon: string | null; adres: string | null; postcode: string | null; plaats: string | null; email: string | null; telefoon: string | null }[]
   offertes: { id: string; offertenummer: string; onderwerp: string | null; status: string; relatie: { bedrijfsnaam: string } | null }[]
+  facturen: { id: string; factuurnummer: string; onderwerp: string | null; status: string; totaal: number | null; relatie: { bedrijfsnaam: string } | null }[]
   projecten: { id: string; naam: string; status: string; relatie: { bedrijfsnaam: string } | null }[]
 }
+
+const EMPTY_RESULTS: SearchResults = { relaties: [], offertes: [], facturen: [], projecten: [] }
 
 const TYPE_LABEL: Record<RecentVisit['type'], string> = {
   klant: 'Klant',
@@ -28,7 +32,7 @@ const TYPE_ICON: Record<RecentVisit['type'], typeof Users> = {
 
 export function SearchBar() {
   const [query, setQuery] = useState('')
-  const [results, setResults] = useState<SearchResults>({ relaties: [], offertes: [], projecten: [] })
+  const [results, setResults] = useState<SearchResults>(EMPTY_RESULTS)
   const [open, setOpen] = useState(false)
   const [recents, setRecents] = useState<RecentVisit[]>([])
   const [, startTransition] = useTransition()
@@ -70,7 +74,7 @@ export function SearchBar() {
     setQuery(value)
     if (debounceRef.current) clearTimeout(debounceRef.current)
     if (value.trim().length < 2) {
-      setResults({ relaties: [], offertes: [], projecten: [] })
+      setResults(EMPTY_RESULTS)
       setOpen(recents.length > 0)
       return
     }
@@ -78,7 +82,7 @@ export function SearchBar() {
       startTransition(async () => {
         const res = await globalSearch(value)
         setResults(res as unknown as SearchResults)
-        const hasResults = res.relaties.length > 0 || res.offertes.length > 0 || res.projecten.length > 0
+        const hasResults = res.relaties.length > 0 || res.offertes.length > 0 || res.facturen.length > 0 || res.projecten.length > 0
         setOpen(hasResults)
         setActiveIndex(-1)
       })
@@ -98,6 +102,7 @@ export function SearchBar() {
     : [
         ...results.relaties.map(r => ({ href: `/relatiebeheer/${r.id}` })),
         ...results.offertes.map(o => ({ href: `/offertes/${o.id}` })),
+        ...results.facturen.map(f => ({ href: `/facturatie/${f.id}` })),
         ...results.projecten.map(p => ({ href: `/projecten/${p.id}` })),
       ]
 
@@ -202,6 +207,11 @@ export function SearchBar() {
                       {(r.contactpersoon || r.plaats) && (
                         <p className="text-xs text-gray-500">{[r.contactpersoon, r.plaats].filter(Boolean).join(' · ')}</p>
                       )}
+                      {(r.adres || r.postcode) && (
+                        <p className="text-[11px] text-gray-500 inline-flex items-center gap-1 mt-0.5">
+                          <MapPin className="h-3 w-3" />{[r.adres, [r.postcode, r.plaats].filter(Boolean).join(' ')].filter(Boolean).join(', ')}
+                        </p>
+                      )}
                       {(r.email || r.telefoon) && (
                         <div className="flex items-center gap-3 mt-0.5 text-[11px] text-gray-500">
                           {r.email && <span className="inline-flex items-center gap-1"><Mail className="h-3 w-3" />{r.email}</span>}
@@ -232,13 +242,36 @@ export function SearchBar() {
                   })}
                 </div>
               )}
+              {results.facturen.length > 0 && (
+                <div>
+                  <div className="px-3 py-1.5 text-xs font-semibold text-gray-500 bg-gray-50 flex items-center gap-1.5">
+                    <Receipt className="h-3 w-3" /> Facturen
+                  </div>
+                  {results.facturen.map((f, i) => {
+                    const idx = results.relaties.length + results.offertes.length + i
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => navigate(`/facturatie/${f.id}`)}
+                        className={`w-full text-left px-3 py-2 text-sm hover:bg-blue-50 ${activeIndex === idx ? 'bg-blue-50' : ''}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-medium text-gray-900">{f.factuurnummer}</p>
+                          {typeof f.totaal === 'number' && <span className="text-xs text-gray-500 shrink-0">{formatCurrency(f.totaal)}</span>}
+                        </div>
+                        <p className="text-xs text-gray-500">{f.onderwerp || f.relatie?.bedrijfsnaam || ''}</p>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
               {results.projecten.length > 0 && (
                 <div>
                   <div className="px-3 py-1.5 text-xs font-semibold text-gray-500 bg-gray-50 flex items-center gap-1.5">
                     <FolderKanban className="h-3 w-3" /> Projecten
                   </div>
                   {results.projecten.map((p, i) => {
-                    const idx = results.relaties.length + results.offertes.length + i
+                    const idx = results.relaties.length + results.offertes.length + results.facturen.length + i
                     return (
                       <button
                         key={p.id}
