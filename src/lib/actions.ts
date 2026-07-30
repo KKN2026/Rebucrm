@@ -7257,6 +7257,38 @@ export async function createRelatieInline(data: {
   return { success: true, id: relatie.id, bedrijfsnaam: relatie.bedrijfsnaam }
 }
 
+// Kozijntekeningen worden opgeslagen op A4 scale 2 (~1190px breed, JPEG q85),
+// wat neerkomt op ±290KB per stuk. Die tekening gaat vervolgens in ZOWEL de
+// offerte-PDF als de tekeningen-PDF, dus bij 20 elementen zit je al op ~11MB
+// aan bijlagen voordat de gebruiker zelf iets heeft toegevoegd. Voor een PDF
+// die op papier of op het scherm bekeken wordt is 900px ruim voldoende; dat
+// scheelt in de praktijk een factor 2 tot 3 zonder zichtbaar kwaliteitsverlies.
+// Mislukt het verkleinen, dan gaat gewoon het origineel mee.
+async function verkleinTekening(
+  origineel: Buffer,
+  pad: string,
+): Promise<{ buffer: Buffer; mime: string }> {
+  const mimeOrigineel = /\.jpe?g$/i.test(pad) ? 'image/jpeg' : 'image/png'
+  try {
+    const sharp = (await import('sharp')).default
+    const meta = await sharp(origineel).metadata()
+    // Al klein genoeg? Dan niet opnieuw comprimeren (dat kost alleen kwaliteit).
+    if ((meta.width || 0) <= 900 && origineel.length < 120 * 1024) {
+      return { buffer: origineel, mime: mimeOrigineel }
+    }
+    const verkleind = await sharp(origineel)
+      .resize({ width: 900, withoutEnlargement: true })
+      .jpeg({ quality: 75, mozjpeg: true })
+      .toBuffer()
+    // Alleen gebruiken als het écht kleiner is.
+    if (verkleind.length >= origineel.length) return { buffer: origineel, mime: mimeOrigineel }
+    return { buffer: verkleind, mime: 'image/jpeg' }
+  } catch (err) {
+    console.error('[offerte-mail] tekening verkleinen mislukt, origineel gebruikt:', err)
+    return { buffer: origineel, mime: mimeOrigineel }
+  }
+}
+
 // === OFFERTE EMAIL VERSTUREN ===
 export async function getOfferteEmailDefaults(offerteId: string) {
   const supabase = await createClient()
@@ -7397,7 +7429,8 @@ export async function sendOfferteEmail(offerteId: string, options: {
     }
   }
 
-  const emailHtml = buildRebuEmailHtml(options.body, link, 'Offerte bekijken &amp; accepteren', medewerkerInfo)
+  // De HTML wordt pas verderop gebouwd: als bijlagen te groot blijken worden ze
+  // vervangen door downloadlinks, en die moeten in de tekst terechtkomen.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let kozijnElementen: any[] | undefined
 
@@ -7462,22 +7495,36 @@ export async function sendOfferteEmail(offerteId: string, options: {
             tekeningenPerNaam.get(t.naam)!.push(t)
           }
 
-          kozijnElementen = []
-          for (const naam of naamVolgorde) {
-            const tekeningenVoorElement = tekeningenPerNaam.get(naam)!
+          // De tekeningen werden hier één voor één opgehaald (await in de lus),
+          // dus bij 20 elementen 20 losse storage-rondjes achter elkaar. Nu
+          // allemaal tegelijk: scheelt bij grote offertes het leeuwendeel van
+          // de wachttijd in deze stap.
+          const tDownload = Date.now()
+          let bytesVoor = 0
+          let bytesNa = 0
+          const tekeningUrls = await Promise.all(naamVolgorde.map(async naam => {
             // Eerste pagina-image als hoofd-tekening (rest blijft onbenut in
             // de email-flow; live-API gebruikt de volledige set)
-            const eerste = tekeningenVoorElement[0]
+            const eerste = tekeningenPerNaam.get(naam)![0]
             const { data: imgFile } = await supabaseAdmin.storage
               .from('documenten')
               .download(eerste.tekeningPath)
+            if (!imgFile) return ''
+            const imgBuffer = Buffer.from(await imgFile.arrayBuffer())
+            bytesVoor += imgBuffer.length
+            const klein = await verkleinTekening(imgBuffer, eerste.tekeningPath)
+            bytesNa += klein.buffer.length
+            return `data:${klein.mime};base64,${klein.buffer.toString('base64')}`
+          }))
+          console.log(
+            `[offerte-mail] ${naamVolgorde.length} tekeningen opgehaald in ${Date.now() - tDownload}ms — ` +
+            `${(bytesVoor / 1024 / 1024).toFixed(1)}MB verkleind naar ${(bytesNa / 1024 / 1024).toFixed(1)}MB`,
+          )
 
-            let tekeningUrl = ''
-            if (imgFile) {
-              const imgBuffer = Buffer.from(await imgFile.arrayBuffer())
-              const mime = /\.jpe?g$/i.test(eerste.tekeningPath) ? 'image/jpeg' : 'image/png'
-              tekeningUrl = `data:${mime};base64,${imgBuffer.toString('base64')}`
-            }
+          kozijnElementen = []
+          for (let i = 0; i < naamVolgorde.length; i++) {
+            const naam = naamVolgorde[i]
+            const tekeningUrl = tekeningUrls[i]
 
             const matchingElement = elementData.find(e => e.naam === naam)
             // Handmatige override wint van de (her-geparste) AI-prijs.
@@ -7521,49 +7568,134 @@ export async function sendOfferteEmail(offerteId: string, options: {
     console.error('Error loading kozijn elements for email:', err)
   }
 
-  // Genereer offerte PDF (met kozijn tekeningen)
+  // Beide PDF's tegelijk renderen — ze stonden achter elkaar terwijl ze niets
+  // van elkaar nodig hebben. De 'offerte zonder prijzen' is vervangen door de
+  // 'Tekeningen-*.pdf', zodat er altijd maar 2 bestanden meegaan:
+  // offerte-met-prijzen + tekeningen.
   const attachments: { filename: string; content: string }[] = []
-  try {
-    const { renderToBuffer } = await import('@react-pdf/renderer')
-    const { OfferteDocument } = await import('@/lib/pdf/offerte-template')
-    const offerteData = { ...offerte, kozijnElementen }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const pdfBuffer = await renderToBuffer(OfferteDocument({ offerte: offerteData }) as any)
-    const pdfBase64 = Buffer.from(pdfBuffer).toString('base64')
-    attachments.push({
-      filename: `Offerte-${offerte.offertenummer}.pdf`,
-      content: pdfBase64,
-    })
-    // De 'offerte zonder prijzen' is vervangen door de 'Tekeningen-*.pdf' hieronder,
-    // zodat er altijd maar 2 bestanden meegaan: offerte-met-prijzen + tekeningen.
-  } catch (err) {
-    console.error('PDF generatie voor email mislukt:', err)
-  }
+  const tRender = Date.now()
+  const [offertePdf, tekeningenPdf] = await Promise.all([
+    (async () => {
+      try {
+        const { renderToBuffer } = await import('@react-pdf/renderer')
+        const { OfferteDocument } = await import('@/lib/pdf/offerte-template')
+        const offerteData = { ...offerte, kozijnElementen }
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const buf = await renderToBuffer(OfferteDocument({ offerte: offerteData }) as any)
+        return Buffer.from(buf).toString('base64')
+      } catch (err) {
+        console.error('PDF generatie voor email mislukt:', err)
+        return null
+      }
+    })(),
+    (async () => {
+      if (!kozijnElementen || kozijnElementen.length === 0) return null
+      try {
+        const { renderToBuffer } = await import('@react-pdf/renderer')
+        const { TekeningenDocument } = await import('@/lib/pdf/tekeningen-template')
+        const tekeningenElementen = kozijnElementen.map(e => ({ ...e }))
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const buf = await renderToBuffer(TekeningenDocument({ offerte: { offertenummer: offerte.offertenummer, elementen: tekeningenElementen } }) as any)
+        return Buffer.from(buf).toString('base64')
+      } catch (err) {
+        console.error('Tekeningen PDF generatie voor email mislukt:', err)
+        return null
+      }
+    })(),
+  ])
+  console.log(`[offerte-mail] PDF's gerenderd in ${Date.now() - tRender}ms`)
 
-  // Genereer tekeningen PDF (zonder prijzen) als er kozijn elementen zijn
-  if (kozijnElementen && kozijnElementen.length > 0) {
-    try {
-      const { renderToBuffer } = await import('@react-pdf/renderer')
-      const { TekeningenDocument } = await import('@/lib/pdf/tekeningen-template')
-      const tekeningenElementen = kozijnElementen.map(e => ({ ...e }))
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tekPdfBuffer = await renderToBuffer(TekeningenDocument({ offerte: { offertenummer: offerte.offertenummer, elementen: tekeningenElementen } }) as any)
-      const tekPdfBase64 = Buffer.from(tekPdfBuffer).toString('base64')
-      attachments.push({
-        filename: `Tekeningen-${offerte.offertenummer}.pdf`,
-        content: tekPdfBase64,
-      })
-    } catch (err) {
-      console.error('Tekeningen PDF generatie voor email mislukt:', err)
-    }
-  }
+  if (offertePdf) attachments.push({ filename: `Offerte-${offerte.offertenummer}.pdf`, content: offertePdf })
+  if (tekeningenPdf) attachments.push({ filename: `Tekeningen-${offerte.offertenummer}.pdf`, content: tekeningenPdf })
 
   // Extra bijlagen (tekeningen etc.)
   if (options.extraBijlagen) {
     attachments.push(...options.extraBijlagen)
   }
 
+  // Grootte-controle vóór het SMTP-verkeer. Gmail weigert mail boven ~25MB;
+  // zonder deze check bleef de verzending eerst minutenlang hangen om daarna
+  // alsnog te falen. Nu krijgt de gebruiker meteen te horen wat er mis is.
+  // 18MB aan bestanden wordt in de mail zelf ~24MB (base64 kost 33% extra),
+  // net onder de 25MB die Gmail accepteert.
+  const MAX_MAIL_MB = 18
+  const mbVan = (a: { content: string }) => (a.content.length * 0.75) / 1024 / 1024 // base64 → bytes
+  const totaalMbVan = (lijst: typeof attachments) => lijst.reduce((s, a) => s + mbVan(a), 0)
+  console.log(
+    `[offerte-mail] ${attachments.length} bijlagen, samen ${totaalMbVan(attachments).toFixed(1)}MB: ` +
+    attachments.map(a => `${a.filename} ${mbVan(a).toFixed(1)}MB`).join(', '),
+  )
+
+  // Past het niet in één mail? Dan NIET weigeren — de offerte moet de deur uit.
+  // We verplaatsen de grootste bijlagen naar opslag en zetten downloadlinks in
+  // de mail, net zolang tot de rest wél past. De offerte-PDF zelf houden we
+  // zoveel mogelijk als echte bijlage, die wil de klant direct zien.
+  const viaLink: { filename: string; url: string; mb: number }[] = []
+  if (totaalMbVan(attachments) > MAX_MAIL_MB) {
+    // Grootste eerst, maar de offerte-PDF pas als allerlaatste kandidaat.
+    const kandidaten = attachments
+      .map((a, i) => ({ i, a, mb: mbVan(a), isOfferte: a.filename === `Offerte-${offerte.offertenummer}.pdf` }))
+      .sort((x, y) => (x.isOfferte !== y.isOfferte ? (x.isOfferte ? 1 : -1) : y.mb - x.mb))
+
+    const teVerplaatsen = new Set<number>()
+    let resterend = totaalMbVan(attachments)
+    for (const k of kandidaten) {
+      if (resterend <= MAX_MAIL_MB) break
+      teVerplaatsen.add(k.i)
+      resterend -= k.mb
+    }
+
+    for (const k of kandidaten) {
+      if (!teVerplaatsen.has(k.i)) continue
+      try {
+        const pad = `offerte-groot/${offerteId}/${Date.now()}-${k.a.filename}`
+        const { error: uploadError } = await supabaseAdmin.storage
+          .from('email-bijlagen')
+          .upload(pad, Buffer.from(k.a.content, 'base64'), {
+            contentType: 'application/pdf',
+            upsert: true,
+          })
+        if (uploadError) throw uploadError
+        // Ruim een jaar geldig — de klant moet er ook later nog bij kunnen.
+        const { data: signed } = await supabaseAdmin.storage
+          .from('email-bijlagen')
+          .createSignedUrl(pad, 60 * 60 * 24 * 365)
+        if (!signed?.signedUrl) throw new Error('geen downloadlink gekregen')
+        viaLink.push({ filename: k.a.filename, url: signed.signedUrl, mb: k.mb })
+      } catch (err) {
+        // Lukt het uploaden niet, dan laten we de bijlage gewoon in de mail
+        // zitten; hooguit is de mail dan te groot, maar we gooien 'm niet weg.
+        console.error(`[offerte-mail] ${k.a.filename} naar opslag verplaatsen mislukt:`, err)
+        teVerplaatsen.delete(k.i)
+      }
+    }
+
+    if (teVerplaatsen.size > 0) {
+      // Van achter naar voren verwijderen zodat de indexen blijven kloppen.
+      for (const i of [...teVerplaatsen].sort((a, b) => b - a)) attachments.splice(i, 1)
+      console.log(
+        `[offerte-mail] ${viaLink.length} bijlage(n) als downloadlink meegestuurd ` +
+        `(${viaLink.map(v => `${v.filename} ${v.mb.toFixed(1)}MB`).join(', ')}); ` +
+        `mail nu ${totaalMbVan(attachments).toFixed(1)}MB`,
+      )
+    }
+  }
+  const totaalMb = totaalMbVan(attachments)
+
+  // Downloadlinks onder aan het bericht, vóór de handtekening/CTA.
+  let mailBody = options.body
+  if (viaLink.length > 0) {
+    const regels = viaLink
+      .map(v => `<li><a href="${v.url}">${v.filename}</a> (${v.mb.toFixed(1)} MB)</li>`)
+      .join('')
+    mailBody +=
+      `<p>De volgende ${viaLink.length === 1 ? 'bijlage was te groot' : 'bijlagen waren te groot'} om mee te sturen. ` +
+      `U kunt ${viaLink.length === 1 ? 'hem' : 'ze'} hier downloaden:</p><ul>${regels}</ul>`
+  }
+  const emailHtml = buildRebuEmailHtml(mailBody, link, 'Offerte bekijken &amp; accepteren', medewerkerInfo)
+
   try {
+    const tVerzend = Date.now()
     const eigenMailbox = medewerkerInfo?.email && EIGEN_MAILBOX_EMAILS.has(medewerkerInfo.email.toLowerCase())
     await sendEmail({
       to: ontvangers,
@@ -7577,6 +7709,7 @@ export async function sendOfferteEmail(offerteId: string, options: {
       fromEmail: eigenMailbox ? medewerkerInfo!.email : undefined,
       replyTo: eigenMailbox ? medewerkerInfo!.email : undefined,
     })
+    console.log(`[offerte-mail] SMTP-verzending ${totaalMb.toFixed(1)}MB in ${Date.now() - tVerzend}ms`)
   } catch (err) {
     console.error('E-mail verzenden mislukt:', err)
     return { error: 'E-mail verzenden mislukt. Gebruik de link om handmatig te delen.', link }
