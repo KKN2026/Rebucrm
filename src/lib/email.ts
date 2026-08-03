@@ -77,6 +77,10 @@ export async function sendEmail(options: {
   // mits het binnen het eigen domein valt (anders DMARC-fail). Default = RESEND_FROM
   // of SMTP_FROM.
   fromEmail?: string
+  // Extra kopregels, o.a. List-Unsubscribe bij bulkmail. Zonder afmeldkop
+  // beschouwen Gmail en Yahoo massamail als spam, en dat straft de reputatie
+  // van het hele domein af — dus ook gewone offerte- en factuurmail.
+  headers?: Record<string, string>
 }) {
   const defaultFrom = process.env.RESEND_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || 'info@rebukozijnen.nl'
   // Alleen overschrijven binnen eigen domein, anders DMARC fail.
@@ -112,6 +116,7 @@ export async function sendEmail(options: {
       text,
       bcc,
       replyTo,
+      headers: options.headers,
       attachments: options.attachments?.map(a => ({
         filename: a.filename,
         content: typeof a.content === 'string' ? Buffer.from(a.content, (a.encoding as BufferEncoding) || 'base64') : a.content,
@@ -137,6 +142,7 @@ export async function sendEmail(options: {
     text,
     bcc,
     replyTo,
+    headers: options.headers,
     attachments: options.attachments,
   })
 }
