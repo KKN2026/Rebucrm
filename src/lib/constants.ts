@@ -112,6 +112,8 @@ export const statusKleuren: Record<string, string> = {
   werknemer: 'bg-blue-100 text-blue-700',
   zzp: 'bg-orange-100 text-orange-700',
   medewerker: 'bg-teal-100 text-teal-700',
+  actief: 'bg-green-100 text-green-700',
+  niet_geconfigureerd: 'bg-gray-100 text-gray-500',
 }
 
 export const leadStatussen = ['nieuw', 'gecontacteerd', 'offerte_verstuurd', 'gewonnen', 'verloren'] as const

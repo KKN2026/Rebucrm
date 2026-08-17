@@ -1,15 +1,36 @@
 import { ImapFlow } from 'imapflow'
 import { simpleParser } from 'mailparser'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { getIntegratieInstellingenCached } from '@/lib/admin-context'
 
-export function createImapClient() {
+// IMAP-instellingen: DB-first (per administratie in te stellen via
+// /beheer/email), met de bestaande env-vars als fallback. Historisch werd
+// voor IMAP-auth de SMTP-inlog hergebruikt (zelfde postbus voor verzenden en
+// ontvangen) — die volgorde blijft behouden als imap_user/imap_pass leeg zijn.
+async function resolveImapConfig(administratieId?: string) {
+  const inst = await getIntegratieInstellingenCached(administratieId)
+  return {
+    host: inst?.imap_host || process.env.IMAP_HOST || 'imap.gmail.com',
+    port: inst?.imap_port || parseInt(process.env.IMAP_PORT || '993'),
+    user: inst?.imap_user || inst?.smtp_user || process.env.SMTP_USER || '',
+    pass: inst?.imap_pass || inst?.smtp_pass || process.env.SMTP_PASS || '',
+  }
+}
+
+export async function hasImapCredentials(administratieId?: string): Promise<boolean> {
+  const cfg = await resolveImapConfig(administratieId)
+  return Boolean(cfg.user && cfg.pass)
+}
+
+export async function createImapClient(administratieId?: string) {
+  const cfg = await resolveImapConfig(administratieId)
   return new ImapFlow({
-    host: process.env.IMAP_HOST || 'imap.gmail.com',
-    port: parseInt(process.env.IMAP_PORT || '993'),
+    host: cfg.host,
+    port: cfg.port,
     secure: true,
     auth: {
-      user: process.env.SMTP_USER || '',
-      pass: process.env.SMTP_PASS || '',
+      user: cfg.user,
+      pass: cfg.pass,
     },
     logger: false,
   })
@@ -159,7 +180,7 @@ export async function syncEmails(administratieId: string) {
     .update({ status: 'syncing', updated_at: new Date().toISOString() })
     .eq('administratie_id', administratieId)
 
-  const client = createImapClient()
+  const client = await createImapClient(administratieId)
   const newEmails: ParsedEmailWithFolder[] = []
   const folderUids: Record<string, number> = (syncState?.folder_uids as Record<string, number>) || {}
   // Backward compat: legacy INBOX laatste_uid
@@ -439,7 +460,7 @@ export async function syncEmails(administratieId: string) {
 
 // Fetch email body on-demand by IMAP UID (in gespecificeerde folder)
 export async function fetchEmailBody(imapUid: number, folder: string = 'INBOX'): Promise<{ text: string | null; html: string | null }> {
-  const client = createImapClient()
+  const client = await createImapClient()
   let text: string | null = null
   let html: string | null = null
 
@@ -466,7 +487,7 @@ export async function fetchEmailBody(imapUid: number, folder: string = 'INBOX'):
 
 // Fetch email attachments on-demand by IMAP UID (in folder)
 export async function fetchEmailAttachments(imapUid: number, folder: string = 'INBOX'): Promise<{ filename: string; contentType: string; size: number; data: string }[]> {
-  const client = createImapClient()
+  const client = await createImapClient()
   const attachments: { filename: string; contentType: string; size: number; data: string }[] = []
 
   try {

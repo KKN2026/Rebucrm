@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer'
 import { Resend } from 'resend'
+import { getIntegratieInstellingenCached } from '@/lib/admin-context'
 
 // Verzendlaag. Voorkeur = Resend (betere deliverability: domein-DKIM/SPF, en je
 // mag vanuit elk geverifieerd @rebukozijnen.nl-adres versturen — geen Gmail
@@ -9,21 +10,26 @@ import { Resend } from 'resend'
 const resendApiKey = process.env.RESEND_API_KEY
 const resend = resendApiKey ? new Resend(resendApiKey) : null
 
-// Strakke timeouts zodat de request niet 60+ seconden blijft hangen als SMTP
-// traag/niet bereikbaar is (bv. bij een login-flow waar de user onmiddellijke
-// feedback nodig heeft). Alleen relevant in de SMTP-fallback.
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-  connectionTimeout: 10000, // 10s voor TCP-connect
-  greetingTimeout: 10000,   // 10s voor EHLO/HELO
-  socketTimeout: 15000,     // 15s voor data-transfer
-})
+// SMTP-instellingen: DB-first (per administratie in te stellen via
+// /beheer/email), met de bestaande env-vars als fallback zodra een veld leeg
+// is. De transporter kan daardoor niet meer op module-niveau eenmalig
+// aangemaakt worden — hij wordt per verzending gebouwd (alleen relevant in de
+// SMTP-fallback, dus geen hot path).
+async function buildSmtpTransporter(administratieId?: string) {
+  const inst = await getIntegratieInstellingenCached(administratieId)
+  return nodemailer.createTransport({
+    host: inst?.smtp_host || process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: inst?.smtp_port || parseInt(process.env.SMTP_PORT || '587'),
+    secure: false,
+    auth: {
+      user: inst?.smtp_user || process.env.SMTP_USER,
+      pass: inst?.smtp_pass || process.env.SMTP_PASS,
+    },
+    connectionTimeout: 10000, // 10s voor TCP-connect
+    greetingTimeout: 10000,   // 10s voor EHLO/HELO
+    socketTimeout: 15000,     // 15s voor data-transfer
+  })
+}
 
 // Genereert een leesbare platte-tekst-variant uit HTML. HTML-only mail telt
 // mee als spamsignaal; een multipart-bericht met text-alternatief scoort beter
@@ -81,8 +87,13 @@ export async function sendEmail(options: {
   // beschouwen Gmail en Yahoo massamail als spam, en dat straft de reputatie
   // van het hele domein af — dus ook gewone offerte- en factuurmail.
   headers?: Record<string, string>
+  // Optioneel: administratie waarvan de SMTP/IMAP-instellingen uit /beheer
+  // gebruikt moeten worden. Zonder opgave wordt de administratie van de
+  // huidige ingelogde gebruiker gebruikt (indien aanwezig), anders env-vars.
+  administratieId?: string
 }) {
-  const defaultFrom = process.env.RESEND_FROM || process.env.SMTP_FROM || process.env.SMTP_USER || 'info@rebukozijnen.nl'
+  const inst = await getIntegratieInstellingenCached(options.administratieId)
+  const defaultFrom = inst?.smtp_from || process.env.RESEND_FROM || process.env.SMTP_FROM || inst?.smtp_user || process.env.SMTP_USER || 'info@rebukozijnen.nl'
   // Alleen overschrijven binnen eigen domein, anders DMARC fail.
   const eigenDomain = defaultFrom.split('@')[1]
   const useFrom = options.fromEmail && options.fromEmail.endsWith('@' + eigenDomain)
@@ -100,7 +111,7 @@ export async function sendEmail(options: {
   // daadwerkelijk en correct verzonden is. Geldt ook voor cron-mails en
   // portaalberichten, omdat alles hier langskomt. Niet gezet = uit.
   let bcc = options.bcc
-  const universeleBcc = (process.env.MAIL_BCC || '').trim()
+  const universeleBcc = (inst?.mail_bcc || process.env.MAIL_BCC || '').trim()
   if (universeleBcc.includes('@')) {
     // Niet dubbel toevoegen als het adres al ontvanger is.
     const bestaand = new Set([...to, ...(bcc || [])].map(a => a.toLowerCase()))
@@ -134,6 +145,7 @@ export async function sendEmail(options: {
   }
 
   // SMTP-fallback (zolang RESEND_API_KEY niet gezet is)
+  const transporter = await buildSmtpTransporter(options.administratieId)
   await transporter.sendMail({
     from,
     to,

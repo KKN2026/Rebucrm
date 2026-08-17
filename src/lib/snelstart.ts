@@ -4,6 +4,8 @@
 // Auth: POST https://auth.snelstart.nl/b2b/token met subscription key + clientkey
 // API:  https://b2bapi.snelstart.nl/v2/*
 
+import { getIntegratieInstellingenCached } from '@/lib/admin-context'
+
 const AUTH_URL = 'https://auth.snelstart.nl/b2b/token'
 const API_BASE = 'https://b2bapi.snelstart.nl/v2'
 
@@ -18,11 +20,21 @@ function schoonSleutel(waarde: string | undefined): string {
     .replace(/^["']|["']$/g, '')
 }
 
+// SnelStart-sleutels: DB-first (in te stellen via /beheer/koppelingen), met de
+// SNELSTART_*-env-vars als fallback zodra een DB-veld leeg is. Zonder sessie
+// (cron/webhook-context) valt dit terug op de env-vars — ongewijzigd gedrag.
+async function resolveSnelStartKeys(): Promise<{ subscriptionKey: string; clientKey: string }> {
+  const inst = await getIntegratieInstellingenCached()
+  return {
+    subscriptionKey: schoonSleutel(inst?.snelstart_subscription_key || process.env.SNELSTART_SUBSCRIPTION_KEY),
+    clientKey: schoonSleutel(inst?.snelstart_client_key || process.env.SNELSTART_CLIENT_KEY),
+  }
+}
+
 let cachedToken: { token: string; expiresAt: number } | null = null
 
 async function getAccessToken(): Promise<string> {
-  const subscriptionKey = schoonSleutel(process.env.SNELSTART_SUBSCRIPTION_KEY)
-  const clientKey = schoonSleutel(process.env.SNELSTART_CLIENT_KEY)
+  const { subscriptionKey, clientKey } = await resolveSnelStartKeys()
   if (!subscriptionKey || !clientKey) {
     throw new Error('SNELSTART_SUBSCRIPTION_KEY en/of SNELSTART_CLIENT_KEY ontbreken')
   }
@@ -60,7 +72,7 @@ async function getAccessToken(): Promise<string> {
 }
 
 async function snelstartFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const subscriptionKey = schoonSleutel(process.env.SNELSTART_SUBSCRIPTION_KEY)
+  const { subscriptionKey } = await resolveSnelStartKeys()
   if (!subscriptionKey) throw new Error('SNELSTART_SUBSCRIPTION_KEY ontbreekt')
 
   const token = await getAccessToken()
@@ -472,6 +484,7 @@ export async function boekMollieBetaling(input: BetalingBoekenInput): Promise<{ 
 
 // ---------- High-level: sync relatie + post factuur ----------
 
-export function isSnelStartEnabled(): boolean {
-  return Boolean(process.env.SNELSTART_SUBSCRIPTION_KEY && process.env.SNELSTART_CLIENT_KEY)
+export async function isSnelStartEnabled(): Promise<boolean> {
+  const { subscriptionKey, clientKey } = await resolveSnelStartKeys()
+  return Boolean(subscriptionKey && clientKey)
 }

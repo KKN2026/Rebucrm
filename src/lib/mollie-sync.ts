@@ -28,7 +28,7 @@ export async function syncFactuurFromMollie(molliePaymentId: string): Promise<Mo
     return { factuurId: null, factuurnummer: null, updated: false, status: null, reden: 'factuur niet gevonden' }
   }
 
-  const payment = await getMolliePaymentStatus(molliePaymentId)
+  const payment = await getMolliePaymentStatus(molliePaymentId, factuur.administratie_id)
   if (payment.status !== 'paid') {
     return { factuurId: factuur.id, factuurnummer: factuur.factuurnummer, updated: false, status: payment.status, reden: 'nog niet betaald' }
   }
@@ -105,7 +105,7 @@ export async function syncFactuurFromMollie(molliePaymentId: string): Promise<Mo
 export async function syncFactuurFromMollieTransactie(transactieId: string): Promise<MollieSyncResult> {
   let payment: { description?: string | null }
   try {
-    const mollie = getMollieClient()
+    const mollie = await getMollieClient()
     payment = await mollie.payments.get(transactieId)
   } catch (e) {
     return { factuurId: null, factuurnummer: null, updated: false, status: null, reden: `payment ophalen mislukt: ${e instanceof Error ? e.message : 'fout'}` }

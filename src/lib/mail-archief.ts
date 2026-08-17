@@ -1,4 +1,4 @@
-import { createImapClient } from '@/lib/imap'
+import { createImapClient, hasImapCredentials } from '@/lib/imap'
 
 /**
  * Kopie van een verstuurd bericht in de Verzonden-map zetten.
@@ -54,10 +54,10 @@ async function vindVerzondenMap(client: {
  */
 export async function bewaarInVerzonden(bericht: VerzondenBericht): Promise<void> {
   if ((process.env.MAIL_ARCHIVEER_VERZONDEN || '').toLowerCase() === 'uit') return
-  if (!process.env.SMTP_USER || !process.env.SMTP_PASS) return
+  if (!(await hasImapCredentials())) return
 
   const start = Date.now()
-  let client: ReturnType<typeof createImapClient> | null = null
+  let client: Awaited<ReturnType<typeof createImapClient>> | null = null
   try {
     const MailComposer = (await import('nodemailer/lib/mail-composer')).default
     const raw: Buffer = await new Promise((resolve, reject) => {
@@ -75,7 +75,7 @@ export async function bewaarInVerzonden(bericht: VerzondenBericht): Promise<void
         .build((err: Error | null, message: Buffer) => (err ? reject(err) : resolve(message)))
     })
 
-    client = createImapClient()
+    client = await createImapClient()
     await client.connect()
     const map = await vindVerzondenMap(client as unknown as { list: () => Promise<unknown[]> })
     // \Seen: een eigen verstuurd bericht hoort niet als ongelezen te tellen.

@@ -15,7 +15,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
 
   const { data: factuur } = await sb
     .from('facturen')
-    .select('id, factuurnummer, status, totaal, betaald_bedrag, betaal_link, mollie_payment_id')
+    .select('id, factuurnummer, status, totaal, betaald_bedrag, betaal_link, mollie_payment_id, administratie_id')
     .eq('publiek_token', token)
     .maybeSingle()
 
@@ -40,7 +40,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
     if (!factuur.mollie_payment_id.startsWith('pl_')) return true
     try {
       const { getMolliePaymentStatus } = await import('@/lib/mollie')
-      const status = await getMolliePaymentStatus(factuur.mollie_payment_id)
+      const status = await getMolliePaymentStatus(factuur.mollie_payment_id, factuur.administratie_id)
       // Alleen een openstaande, niet-verlopen link met het juiste bedrag mag
       // hergebruikt worden. Verlopen ('expired') valt hier automatisch onder.
       if (status.status !== 'open' && status.status !== 'paid') return true
@@ -53,10 +53,11 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
   if (needsNew && factuur.mollie_payment_id) {
     // Oude link intrekken zodat de klant niet alsnog het verkeerde bedrag betaalt
     const { cancelMolliePaymentLink } = await import('@/lib/mollie')
-    await cancelMolliePaymentLink(factuur.mollie_payment_id)
+    await cancelMolliePaymentLink(factuur.mollie_payment_id, factuur.administratie_id)
   }
 
-  if (needsNew && process.env.MOLLIE_API_KEY) {
+  const { isMollieEnabled } = await import('@/lib/mollie')
+  if (needsNew && await isMollieEnabled(factuur.administratie_id)) {
     try {
       const appUrl = getAppUrl()
       const nieuwe = await createMolliePayment({
@@ -64,6 +65,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ token: 
         description: `Factuur ${factuur.factuurnummer}`,
         redirectUrl: `${appUrl}/betaling/succes`,
         webhookUrl: `${appUrl}/api/mollie/webhook`,
+        administratieId: factuur.administratie_id,
       })
       await sb
         .from('facturen')

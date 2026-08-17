@@ -1,11 +1,5 @@
-import { getAdministratie, getNummering, getGebruikers } from '@/lib/actions'
-import { BeheerView } from './beheer-view'
+import { redirect } from 'next/navigation'
 
-export default async function BeheerPage() {
-  const [administratie, nummering, gebruikers] = await Promise.all([
-    getAdministratie(),
-    getNummering(),
-    getGebruikers(),
-  ])
-  return <BeheerView administratie={administratie} nummering={nummering} gebruikers={gebruikers} />
+export default function BeheerPage() {
+  redirect('/beheer/bedrijfsgegevens')
 }

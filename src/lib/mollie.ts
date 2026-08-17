@@ -1,17 +1,34 @@
 import createMollieClient from '@mollie/api-client'
+import { getIntegratieInstellingenCached } from '@/lib/admin-context'
 
-let mollieClient: ReturnType<typeof createMollieClient> | null = null
+// Mollie API-key: DB-first (in te stellen via /beheer/koppelingen), met
+// MOLLIE_API_KEY als fallback zodra het DB-veld leeg is. Zonder expliciete
+// administratieId wordt de administratie van de huidige ingelogde gebruiker
+// gebruikt; in cron-/webhook-context (geen sessie) valt dit terug op de
+// env-var, tenzij de aanroeper al een administratie_id bij de hand heeft.
+async function resolveMollieApiKey(administratieId?: string): Promise<string> {
+  const inst = await getIntegratieInstellingenCached(administratieId)
+  // Trim evt. trailing newline/spaces — anders "is not a legal HTTP header value"
+  return (inst?.mollie_api_key || process.env.MOLLIE_API_KEY || '').trim().replace(/[\r\n]/g, '')
+}
 
-export function getMollieClient() {
-  if (!mollieClient) {
-    // Trim evt. trailing newline/spaces — anders "is not a legal HTTP header value"
-    const apiKey = (process.env.MOLLIE_API_KEY || '').trim().replace(/[\r\n]/g, '')
-    if (!apiKey) {
-      throw new Error('MOLLIE_API_KEY is niet geconfigureerd')
-    }
-    mollieClient = createMollieClient({ apiKey })
+export async function isMollieEnabled(administratieId?: string): Promise<boolean> {
+  return Boolean(await resolveMollieApiKey(administratieId))
+}
+
+const mollieClientCache = new Map<string, ReturnType<typeof createMollieClient>>()
+
+export async function getMollieClient(administratieId?: string) {
+  const apiKey = await resolveMollieApiKey(administratieId)
+  if (!apiKey) {
+    throw new Error('MOLLIE_API_KEY is niet geconfigureerd')
   }
-  return mollieClient
+  let client = mollieClientCache.get(apiKey)
+  if (!client) {
+    client = createMollieClient({ apiKey })
+    mollieClientCache.set(apiKey, client)
+  }
+  return client
 }
 
 /**
@@ -27,8 +44,9 @@ export async function createMolliePayment(options: {
   webhookUrl: string
   metadata?: Record<string, string>
   expiresInDays?: number
+  administratieId?: string
 }) {
-  const mollie = getMollieClient()
+  const mollie = await getMollieClient(options.administratieId)
   const expiresInDays = options.expiresInDays ?? 30
   const expiresAt = new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000)
     .toISOString()
@@ -64,10 +82,10 @@ export async function createMolliePayment(options: {
  * Trekt een Mollie Payment Link in (best-effort) zodat een klant niet meer
  * via een verouderde link het verkeerde bedrag kan betalen.
  */
-export async function cancelMolliePaymentLink(paymentLinkId: string): Promise<boolean> {
+export async function cancelMolliePaymentLink(paymentLinkId: string, administratieId?: string): Promise<boolean> {
   if (!paymentLinkId.startsWith('pl_')) return false
   try {
-    const mollie = getMollieClient()
+    const mollie = await getMollieClient(administratieId)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     await (mollie as any).paymentLinks.delete(paymentLinkId)
     return true
@@ -89,14 +107,14 @@ export async function cancelMolliePaymentLink(paymentLinkId: string): Promise<bo
  */
 import { createAdminClient } from '@/lib/supabase/admin'
 export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link: string | null; created: boolean }> {
-  if (!process.env.MOLLIE_API_KEY) return { link: null, created: false }
   const sb = createAdminClient()
   const { data: f } = await sb
     .from('facturen')
-    .select('id, factuurnummer, totaal, betaald_bedrag, betaal_link, mollie_payment_id, status')
+    .select('id, factuurnummer, totaal, betaald_bedrag, betaal_link, mollie_payment_id, status, administratie_id')
     .eq('id', factuurId)
     .maybeSingle()
   if (!f) return { link: null, created: false }
+  if (!(await isMollieEnabled(f.administratie_id))) return { link: null, created: false }
   const openstaand = Number(f.totaal || 0) - Number(f.betaald_bedrag || 0)
   if (f.betaal_link) {
     const linkNogGeldig = await (async () => {
@@ -104,7 +122,7 @@ export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link
       // Oude tr_-payments of onbekend ID: laat staan (backwards-compat).
       if (!plId || !plId.startsWith('pl_')) return true
       try {
-        const mollie = getMollieClient()
+        const mollie = await getMollieClient(f.administratie_id)
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const link: any = await (mollie as any).paymentLinks.get(plId)
         if (link?.paidAt) return true // al betaald — nooit vervangen
@@ -123,7 +141,7 @@ export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link
     if (linkNogGeldig) return { link: f.betaal_link as string, created: false }
     // Bedrag klopt niet meer: oude link intrekken en hieronder (indien van
     // toepassing) een verse aanmaken met het juiste openstaande bedrag.
-    if (f.mollie_payment_id) await cancelMolliePaymentLink(f.mollie_payment_id as string)
+    if (f.mollie_payment_id) await cancelMolliePaymentLink(f.mollie_payment_id as string, f.administratie_id)
     await sb.from('facturen')
       .update({ betaal_link: null, mollie_payment_id: null })
       .eq('id', factuurId)
@@ -140,6 +158,7 @@ export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link
       description: `Factuur ${f.factuurnummer}`,
       redirectUrl: `${appUrl}/betaling/succes`,
       webhookUrl: `${appUrl}/api/mollie/webhook`,
+      administratieId: f.administratie_id,
     })
     await sb.from('facturen')
       .update({ mollie_payment_id: payment.id, betaal_link: payment.checkoutUrl })
@@ -156,8 +175,8 @@ export async function ensureFactuurBetaalLink(factuurId: string): Promise<{ link
  * Payments (`tr_…`) voor backwards-compat met facturen die eerder via de
  * Payments API zijn aangemaakt.
  */
-export async function getMolliePaymentStatus(paymentId: string) {
-  const mollie = getMollieClient()
+export async function getMolliePaymentStatus(paymentId: string, administratieId?: string) {
+  const mollie = await getMollieClient(administratieId)
 
   if (paymentId.startsWith('pl_')) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

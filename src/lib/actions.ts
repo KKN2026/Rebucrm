@@ -15,6 +15,7 @@ import { sendEmail, normaliseerOntvangers } from '@/lib/email'
 import { buildRebuEmailHtml, buildFactuurEmailHtml } from '@/lib/email-template'
 import { getAppUrl } from '@/lib/utils'
 import { FACTUUR_OVERRIDE_EMBED, pasFactuurAdresToe } from '@/lib/factuur-adres'
+import { getStandaardBtwPercentage, getStandaardBetaaltermijnDagen } from '@/lib/admin-context'
 
 // Helper: pagineer Supabase queries die door de 1000-rij limiet heen moeten
 async function fetchAllRows<T>(queryFn: (from: number, to: number) => PromiseLike<{ data: T[] | null }>): Promise<T[]> {
@@ -446,7 +447,7 @@ async function pushRelatieNaarSnelStart(relatieId: string, record: {
   iban: string | null
 }) {
   const { isSnelStartEnabled, findRelatieByEmail, findRelatieByNaam, createRelatie } = await import('@/lib/snelstart')
-  if (!isSnelStartEnabled()) return
+  if (!(await isSnelStartEnabled())) return
   const sb = createAdminClient()
 
   // Bestaande SnelStart-relatie zoeken (kvk_nummer of email-match) zodat we
@@ -733,13 +734,14 @@ export async function saveProduct(formData: FormData) {
   if (!adminId) return { error: 'Niet ingelogd' }
 
   const id = formData.get('id') as string
+  const btwPercentageRaw = parseInt(formData.get('btw_percentage') as string)
   const record = {
     administratie_id: adminId,
     naam: formData.get('naam') as string,
     omschrijving: formData.get('omschrijving') as string || null,
     eenheid: formData.get('eenheid') as string || 'stuk',
     prijs: parseFloat(formData.get('prijs') as string) || 0,
-    btw_percentage: parseInt(formData.get('btw_percentage') as string) || 21,
+    btw_percentage: Number.isFinite(btwPercentageRaw) ? btwPercentageRaw : await getStandaardBtwPercentage(adminId),
     type: formData.get('type') as string || 'product',
     voorraad_bijhouden: formData.get('voorraad_bijhouden') === 'true',
     voorraad: parseInt(formData.get('voorraad') as string) || 0,
@@ -1252,6 +1254,7 @@ export async function saveOfferte(formData: FormData) {
   if (regels.length > 0) {
     // Filter ongeldige regels (lege omschrijving = NOT NULL violation) en
     // normaliseer numerieke velden zodat we nooit op een type-fout knappen.
+    const standaardBtw = await getStandaardBtwPercentage(adminId)
     const regelRecords = regels
       .map((r: { omschrijving?: string; aantal?: number | string | null; prijs?: number | string | null; btw_percentage?: number | string; product_id?: string; isTekst?: boolean }, i: number) => {
         const omschrijving = (r.omschrijving || '').trim() || '(geen omschrijving)'
@@ -1272,7 +1275,7 @@ export async function saveOfferte(formData: FormData) {
         }
         const aantal = typeof r.aantal === 'number' ? r.aantal : parseFloat(String(r.aantal ?? 0)) || 0
         const prijs = typeof r.prijs === 'number' ? r.prijs : parseFloat(String(r.prijs ?? 0)) || 0
-        const btw = typeof r.btw_percentage === 'number' ? r.btw_percentage : parseFloat(String(r.btw_percentage ?? 21)) || 21
+        const btw = typeof r.btw_percentage === 'number' ? r.btw_percentage : parseFloat(String(r.btw_percentage ?? standaardBtw)) || standaardBtw
         return {
           offerte_id: offerteId,
           product_id: r.product_id || null,
@@ -2485,7 +2488,7 @@ export async function deleteFactuur(id: string) {
   // het factuurnummer wel bekend is, zoek de orphan-boeking alsnog op.
   try {
     const { isSnelStartEnabled, deleteVerkoopboeking, findVerkoopboekingByFactuurnummer } = await import('@/lib/snelstart')
-    if (isSnelStartEnabled() && factuur) {
+    if (await isSnelStartEnabled() && factuur) {
       let boekingId: string | null = factuur.snelstart_boeking_id || null
       if (!boekingId && factuur.factuurnummer) {
         boekingId = await findVerkoopboekingByFactuurnummer(factuur.factuurnummer)
@@ -2841,7 +2844,7 @@ export async function sendFactuurEmail(factuurId: string, options: {
     factuurUpdate.datum = vandaag
     const oudeDatum = factuur.datum ? new Date(factuur.datum) : null
     const oudeVervaldatum = factuur.vervaldatum ? new Date(factuur.vervaldatum) : null
-    let dagenTermijn = 7
+    let dagenTermijn = await getStandaardBetaaltermijnDagen(factuur.administratie_id)
     if (oudeDatum && oudeVervaldatum) {
       const diff = Math.round((oudeVervaldatum.getTime() - oudeDatum.getTime()) / (1000 * 60 * 60 * 24))
       if (diff > 0 && diff <= 90) dagenTermijn = diff
@@ -2863,7 +2866,8 @@ export async function sendFactuurEmail(factuurId: string, options: {
 
   const molliePromise: Promise<string | null | { error: string }> = (async () => {
     if (mollieDoNothing) return huidigeBetaalLink
-    if (!process.env.MOLLIE_API_KEY) {
+    const { isMollieEnabled } = await import('@/lib/mollie')
+    if (!(await isMollieEnabled(factuur.administratie_id))) {
       return { error: 'Mollie is niet geconfigureerd — kan factuur niet versturen zonder betaal-link.' }
     }
     const { ensureFactuurBetaalLink } = await import('@/lib/mollie')
@@ -3044,7 +3048,7 @@ export async function sendFactuurEmail(factuurId: string, options: {
   if (!options.skipSnelStart) {
     try {
       const { isSnelStartEnabled } = await import('@/lib/snelstart')
-      if (isSnelStartEnabled() && !factuur.snelstart_synced_at && !factuur.snelstart_boeking_id) {
+      if (await isSnelStartEnabled() && !factuur.snelstart_synced_at && !factuur.snelstart_boeking_id) {
         await pushFactuurToSnelStart(factuurId).catch(err => {
           console.error('SnelStart push mislukt voor factuur', factuurId, err)
         })
@@ -3282,7 +3286,7 @@ export async function crediteerFactuur(factuurId: string, reden?: string) {
   // Push BEIDE naar SnelStart (eerst origineel als die nog niet gepusht is, dan credit)
   try {
     const { isSnelStartEnabled } = await import('@/lib/snelstart')
-    if (isSnelStartEnabled()) {
+    if (await isSnelStartEnabled()) {
       // 1) Origineel pushen als hij nog niet in SS staat (en nog verzonden-status heeft)
       if (!original.snelstart_boeking_id) {
         await pushFactuurToSnelStart(original.id as string).catch(err => {
@@ -3305,7 +3309,7 @@ export async function crediteerFactuur(factuurId: string, reden?: string) {
   // niet meer via de oude Mollie-link betaald kunnen worden.
   if (original.mollie_payment_id) {
     const { cancelMolliePaymentLink } = await import('@/lib/mollie')
-    await cancelMolliePaymentLink(original.mollie_payment_id as string)
+    await cancelMolliePaymentLink(original.mollie_payment_id as string, original.administratie_id)
     await supabaseAdmin.from('facturen')
       .update({ betaal_link: null, mollie_payment_id: null })
       .eq('id', original.id)
@@ -3325,7 +3329,7 @@ export async function syncSnelstartBetalingen(administratieIdOverride?: string) 
   if (!adminId) return { error: 'Niet ingelogd' }
 
   const { isSnelStartEnabled, listAllVerkoopfacturen } = await import('@/lib/snelstart')
-  if (!isSnelStartEnabled()) return { error: 'SnelStart niet geconfigureerd' }
+  if (!(await isSnelStartEnabled())) return { error: 'SnelStart niet geconfigureerd' }
 
   const supabaseAdmin = createAdminClient()
 
@@ -3421,7 +3425,7 @@ export async function syncSnelstartBetalingen(administratieIdOverride?: string) 
     if (zouDegraderen && f.mollie_payment_id) {
       try {
         const { getMolliePaymentStatus } = await import('@/lib/mollie')
-        const betaling = await getMolliePaymentStatus(f.mollie_payment_id)
+        const betaling = await getMolliePaymentStatus(f.mollie_payment_id, adminId)
         mollieBeschermd = betaling.status === 'paid'
       } catch (err) {
         // Mollie even niet bereikbaar: dan liever de bestaande status laten
@@ -3599,7 +3603,7 @@ export async function generateBetaallink(factuurId: string) {
 
   const { data: factuur } = await supabase
     .from('facturen')
-    .select('id, factuurnummer, totaal, betaald_bedrag, status')
+    .select('id, factuurnummer, totaal, betaald_bedrag, status, administratie_id')
     .eq('id', factuurId)
     .single()
 
@@ -3618,6 +3622,7 @@ export async function generateBetaallink(factuurId: string) {
       redirectUrl: `${appUrl}/betaling/succes`,
       webhookUrl: `${appUrl}/api/mollie/webhook`,
       metadata: { factuurId },
+      administratieId: factuur.administratie_id,
     })
 
     await supabase
@@ -5112,6 +5117,123 @@ export async function saveAdministratie(formData: FormData) {
   }
 
   const { error } = await supabase.from('administraties').update(record).eq('id', adminId)
+  if (error) return { error: error.message }
+  revalidatePath('/beheer')
+  return { success: true }
+}
+
+export async function saveInstellingenAlgemeen(formData: FormData) {
+  const supabase = await createClient()
+  const adminId = await getAdministratieId()
+  if (!adminId) return { error: 'Niet ingelogd' }
+
+  const btw = parseInt(formData.get('standaard_btw_percentage') as string)
+  const termijn = parseInt(formData.get('standaard_betaaltermijn_dagen') as string)
+
+  const record = {
+    standaard_btw_percentage: Number.isFinite(btw) ? btw : 21,
+    standaard_betaaltermijn_dagen: Number.isFinite(termijn) && termijn > 0 ? termijn : 7,
+  }
+
+  const { error } = await supabase.from('administraties').update(record).eq('id', adminId)
+  if (error) return { error: error.message }
+  revalidatePath('/beheer')
+  return { success: true }
+}
+
+// Secret-velden (wachtwoorden/API-sleutels): een leeg formulierveld betekent
+// "niet gewijzigd", niet "wissen" — de UI vult deze velden om veiligheidsredenen
+// nooit vooraf in, dus een leeg submit mag de bestaande waarde nooit overschrijven.
+function secretOrKeep(formData: FormData, key: string): string | undefined {
+  const raw = (formData.get(key) as string || '').trim()
+  return raw ? raw : undefined
+}
+
+export async function saveInstellingenEmail(formData: FormData) {
+  const supabase = await createClient()
+  const adminId = await getAdministratieId()
+  if (!adminId) return { error: 'Niet ingelogd' }
+
+  const record: Record<string, unknown> = {
+    smtp_host: (formData.get('smtp_host') as string || '').trim() || null,
+    smtp_port: parseInt(formData.get('smtp_port') as string) || null,
+    smtp_user: (formData.get('smtp_user') as string || '').trim() || null,
+    smtp_from: (formData.get('smtp_from') as string || '').trim() || null,
+    mail_bcc: (formData.get('mail_bcc') as string || '').trim() || null,
+    imap_host: (formData.get('imap_host') as string || '').trim() || null,
+    imap_port: parseInt(formData.get('imap_port') as string) || null,
+    imap_user: (formData.get('imap_user') as string || '').trim() || null,
+  }
+  const smtpPass = secretOrKeep(formData, 'smtp_pass')
+  if (smtpPass !== undefined) record.smtp_pass = smtpPass
+  const imapPass = secretOrKeep(formData, 'imap_pass')
+  if (imapPass !== undefined) record.imap_pass = imapPass
+
+  const { error } = await supabase.from('administraties').update(record).eq('id', adminId)
+  if (error) return { error: error.message }
+  revalidatePath('/beheer')
+  return { success: true }
+}
+
+export async function saveInstellingenKoppelingen(formData: FormData) {
+  const supabase = await createClient()
+  const adminId = await getAdministratieId()
+  if (!adminId) return { error: 'Niet ingelogd' }
+
+  const record: Record<string, unknown> = {}
+  const mollieKey = secretOrKeep(formData, 'mollie_api_key')
+  if (mollieKey !== undefined) record.mollie_api_key = mollieKey
+  const snelstartClientKey = secretOrKeep(formData, 'snelstart_client_key')
+  if (snelstartClientKey !== undefined) record.snelstart_client_key = snelstartClientKey
+  const snelstartSubscriptionKey = secretOrKeep(formData, 'snelstart_subscription_key')
+  if (snelstartSubscriptionKey !== undefined) record.snelstart_subscription_key = snelstartSubscriptionKey
+
+  if (Object.keys(record).length === 0) {
+    revalidatePath('/beheer')
+    return { success: true }
+  }
+
+  const { error } = await supabase.from('administraties').update(record).eq('id', adminId)
+  if (error) return { error: error.message }
+  revalidatePath('/beheer')
+  return { success: true }
+}
+
+export async function uploadLogo(formData: FormData) {
+  const adminId = await getAdministratieId()
+  if (!adminId) return { error: 'Niet ingelogd' }
+
+  const file = formData.get('logo') as File
+  if (!file || !file.size) return { error: 'Geen bestand geselecteerd' }
+
+  const supabaseAdmin = createAdminClient()
+  const ext = (file.name.split('.').pop() || 'png').toLowerCase()
+  const path = `${adminId}/logo-${Date.now()}.${ext}`
+  const buffer = Buffer.from(await file.arrayBuffer())
+
+  const { error: uploadError } = await supabaseAdmin.storage
+    .from('huisstijl')
+    .upload(path, buffer, { contentType: file.type || 'image/png', upsert: true })
+  if (uploadError) return { error: uploadError.message }
+
+  const { data: pub } = supabaseAdmin.storage.from('huisstijl').getPublicUrl(path)
+
+  const { error } = await supabaseAdmin
+    .from('administraties')
+    .update({ logo_url: pub.publicUrl })
+    .eq('id', adminId)
+  if (error) return { error: error.message }
+
+  revalidatePath('/beheer')
+  return { success: true, logo_url: pub.publicUrl }
+}
+
+export async function verwijderLogo() {
+  const supabase = await createClient()
+  const adminId = await getAdministratieId()
+  if (!adminId) return { error: 'Niet ingelogd' }
+
+  const { error } = await supabase.from('administraties').update({ logo_url: null }).eq('id', adminId)
   if (error) return { error: error.message }
   revalidatePath('/beheer')
   return { success: true }

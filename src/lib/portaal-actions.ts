@@ -665,6 +665,7 @@ async function autoFacturerenNaAcceptatie(
       description: `Factuur ${factuurVolledig.factuurnummer}`,
       redirectUrl: `${appUrl}/betaling/succes`,
       webhookUrl: `${appUrl}/api/mollie/webhook`,
+      administratieId: factuurVolledig.administratie_id,
     })
 
     betaalLink = payment.checkoutUrl || null
@@ -765,7 +766,7 @@ Rebu Kozijnen`
   // SnelStart sync — alleen nieuwe facturen (auto-aangemaakt bij acceptatie)
   try {
     const { isSnelStartEnabled } = await import('@/lib/snelstart')
-    if (isSnelStartEnabled() && !factuurVolledig.snelstart_synced_at && !factuurVolledig.snelstart_boeking_id) {
+    if (await isSnelStartEnabled() && !factuurVolledig.snelstart_synced_at && !factuurVolledig.snelstart_boeking_id) {
       const { pushFactuurToSnelStart } = await import('@/lib/actions')
       await pushFactuurToSnelStart(factuurIdToSend).catch(err => {
         console.error('SnelStart push mislukt voor auto-factuur', factuurIdToSend, err)
