@@ -43,7 +43,7 @@ export async function letterMollieBetalingenAf(opties: { dryRun?: boolean } = {}
   const samenvatting: AfletterSamenvatting = { bekeken: 0, geboekt: 0, overgeslagen: 0, fouten: [], regels: [] }
 
   const { isSnelStartEnabled, boekMollieBetaling, listAllVerkoopfacturen } = await import('@/lib/snelstart')
-  if (!isSnelStartEnabled()) {
+  if (!(await isSnelStartEnabled())) {
     samenvatting.fouten.push('SnelStart niet geconfigureerd')
     return samenvatting
   }
