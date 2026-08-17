@@ -106,12 +106,15 @@ export async function sendEmail(options: {
   const to = normaliseerOntvangers(options.to)
   if (to.length === 0) throw new Error('Geen geldig e-mailadres opgegeven')
 
-  // Universele blinde kopie (env MAIL_BCC): van élk bericht dat het CRM
-  // verstuurt gaat een kopie naar dit adres, zodat je kunt controleren of er
-  // daadwerkelijk en correct verzonden is. Geldt ook voor cron-mails en
-  // portaalberichten, omdat alles hier langskomt. Niet gezet = uit.
+  // Universele blinde kopie (in te stellen via /beheer/email, env MAIL_BCC als
+  // fallback): van élk bericht dat het CRM verstuurt gaat een kopie naar dit
+  // adres, zodat je kunt controleren of er daadwerkelijk en correct verzonden
+  // is. Geldt ook voor cron-mails en portaalberichten, omdat alles hier
+  // langskomt. Niet gezet = uit. De aan/uit-schakelaar (mail_bcc_actief) laat
+  // je het adres bewaren en tijdelijk uitzetten zonder het veld leeg te maken.
   let bcc = options.bcc
-  const universeleBcc = (inst?.mail_bcc || process.env.MAIL_BCC || '').trim()
+  const bccActief = inst?.mail_bcc_actief !== false
+  const universeleBcc = bccActief ? (inst?.mail_bcc || process.env.MAIL_BCC || '').trim() : ''
   if (universeleBcc.includes('@')) {
     // Niet dubbel toevoegen als het adres al ontvanger is.
     const bestaand = new Set([...to, ...(bcc || [])].map(a => a.toLowerCase()))

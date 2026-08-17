@@ -37,6 +37,7 @@ export interface AdministratieIntegratieInstellingen {
   smtp_pass: string | null
   smtp_from: string | null
   mail_bcc: string | null
+  mail_bcc_actief: boolean
   imap_host: string | null
   imap_port: number | null
   imap_user: string | null
@@ -68,7 +69,7 @@ export const getIntegratieInstellingenCached = cache(async (
     .from('administraties')
     .select(`
       standaard_btw_percentage, standaard_betaaltermijn_dagen,
-      smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from, mail_bcc,
+      smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from, mail_bcc, mail_bcc_actief,
       imap_host, imap_port, imap_user, imap_pass,
       mollie_api_key, snelstart_client_key, snelstart_subscription_key
     `)

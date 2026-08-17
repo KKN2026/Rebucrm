@@ -5160,6 +5160,7 @@ export async function saveInstellingenEmail(formData: FormData) {
     smtp_user: (formData.get('smtp_user') as string || '').trim() || null,
     smtp_from: (formData.get('smtp_from') as string || '').trim() || null,
     mail_bcc: (formData.get('mail_bcc') as string || '').trim() || null,
+    mail_bcc_actief: formData.get('mail_bcc_actief') === 'true',
     imap_host: (formData.get('imap_host') as string || '').trim() || null,
     imap_port: parseInt(formData.get('imap_port') as string) || null,
     imap_user: (formData.get('imap_user') as string || '').trim() || null,
