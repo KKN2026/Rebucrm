@@ -16,6 +16,7 @@ export default async function EmailPage() {
       smtpFrom={administratie?.smtp_from || ''}
       mailBcc={administratie?.mail_bcc || ''}
       mailBccActief={administratie?.mail_bcc_actief ?? true}
+      broadcastBccActief={administratie?.broadcast_bcc_actief ?? true}
       imapHost={administratie?.imap_host || ''}
       imapPort={administratie?.imap_port || null}
       imapUser={administratie?.imap_user || ''}

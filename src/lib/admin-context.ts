@@ -38,6 +38,7 @@ export interface AdministratieIntegratieInstellingen {
   smtp_from: string | null
   mail_bcc: string | null
   mail_bcc_actief: boolean
+  broadcast_bcc_actief: boolean
   imap_host: string | null
   imap_port: number | null
   imap_user: string | null
@@ -69,7 +70,7 @@ export const getIntegratieInstellingenCached = cache(async (
     .from('administraties')
     .select(`
       standaard_btw_percentage, standaard_betaaltermijn_dagen,
-      smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from, mail_bcc, mail_bcc_actief,
+      smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from, mail_bcc, mail_bcc_actief, broadcast_bcc_actief,
       imap_host, imap_port, imap_user, imap_pass,
       mollie_api_key, snelstart_client_key, snelstart_subscription_key
     `)
@@ -93,4 +94,13 @@ export async function getStandaardBtwPercentage(administratieId?: string): Promi
 export async function getStandaardBetaaltermijnDagen(administratieId?: string): Promise<number> {
   const inst = await getIntegratieInstellingenCached(administratieId)
   return inst?.standaard_betaaltermijn_dagen ?? 7
+}
+
+// Of een broadcast-mail ontvangers via BCC verstuurt (adressen verborgen voor
+// elkaar) of niet. Instelbaar via /beheer/email; default true — uitzetten is
+// een bewuste, apart gelabelde keuze omdat het e-mailadressen van ontvangers
+// voor elkaar zichtbaar maakt.
+export async function getBroadcastBccActief(administratieId?: string): Promise<boolean> {
+  const inst = await getIntegratieInstellingenCached(administratieId)
+  return inst?.broadcast_bcc_actief !== false
 }

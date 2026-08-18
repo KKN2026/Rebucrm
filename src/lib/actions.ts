@@ -15,7 +15,7 @@ import { sendEmail, normaliseerOntvangers } from '@/lib/email'
 import { buildRebuEmailHtml, buildFactuurEmailHtml } from '@/lib/email-template'
 import { getAppUrl } from '@/lib/utils'
 import { FACTUUR_OVERRIDE_EMBED, pasFactuurAdresToe } from '@/lib/factuur-adres'
-import { getStandaardBtwPercentage, getStandaardBetaaltermijnDagen } from '@/lib/admin-context'
+import { getStandaardBtwPercentage, getStandaardBetaaltermijnDagen, getBroadcastBccActief } from '@/lib/admin-context'
 
 // Helper: pagineer Supabase queries die door de 1000-rij limiet heen moeten
 async function fetchAllRows<T>(queryFn: (from: number, to: number) => PromiseLike<{ data: T[] | null }>): Promise<T[]> {
@@ -5161,6 +5161,7 @@ export async function saveInstellingenEmail(formData: FormData) {
     smtp_from: (formData.get('smtp_from') as string || '').trim() || null,
     mail_bcc: (formData.get('mail_bcc') as string || '').trim() || null,
     mail_bcc_actief: formData.get('mail_bcc_actief') === 'true',
+    broadcast_bcc_actief: formData.get('broadcast_bcc_actief') === 'true',
     imap_host: (formData.get('imap_host') as string || '').trim() || null,
     imap_port: parseInt(formData.get('imap_port') as string) || null,
     imap_user: (formData.get('imap_user') as string || '').trim() || null,
@@ -11765,16 +11766,21 @@ export async function sendBroadcastEmail(onderwerp: string, bericht: string, typ
   const emailHtml = buildRebuEmailHtml(bericht)
   const from = process.env.SMTP_FROM || process.env.SMTP_USER || 'Nick@rebukozijnen.nl'
   const BATCH_SIZE = 90
+  // Standaard verstuurt de broadcast alle ontvangers via BCC, zodat klanten
+  // elkaars e-mailadres niet zien. Instelbaar via /beheer/email — uitzetten
+  // is een bewuste keuze en betekent dat ontvangers-adressen voor elkaar
+  // zichtbaar worden (aan-veld i.p.v. bcc).
+  const bccActief = await getBroadcastBccActief(adminId)
 
   try {
     // Verstuur in batches van 90 (Gmail SMTP limiet)
     for (let i = 0; i < emailAdressen.length; i += BATCH_SIZE) {
       const batch = emailAdressen.slice(i, i + BATCH_SIZE)
       await sendEmail({
-        to: from,
+        to: bccActief ? from : batch,
         subject: onderwerp,
         html: emailHtml,
-        bcc: batch,
+        bcc: bccActief ? batch : undefined,
         attachments: bijlagen?.map(b => ({ filename: b.filename, content: b.content, encoding: 'base64' })),
         // Massamail zonder afmeldmogelijkheid wordt door Gmail en Yahoo als
         // spam aangemerkt, en dat beschadigt de reputatie van het hele domein

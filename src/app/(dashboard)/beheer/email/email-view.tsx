@@ -15,6 +15,7 @@ interface EmailViewProps {
   smtpFrom: string
   mailBcc: string
   mailBccActief: boolean
+  broadcastBccActief: boolean
   imapHost: string
   imapPort: number | null
   imapUser: string
@@ -67,6 +68,27 @@ export function EmailView(props: EmailViewProps) {
                   BCC actief
                 </label>
               </div>
+            </div>
+
+            <h3 className="font-medium text-gray-900 pt-2">Broadcast-mail</h3>
+            <div>
+              <label className="flex items-start gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  name="broadcast_bcc_actief"
+                  value="true"
+                  defaultChecked={props.broadcastBccActief}
+                  className="rounded border-gray-300 text-primary mt-0.5"
+                />
+                <span>
+                  Ontvangers verbergen voor elkaar (BCC) <span className="text-gray-400">— aanbevolen</span>
+                  <br />
+                  <span className="text-xs text-gray-500">
+                    Uitvinken betekent dat bij een broadcast-mail alle ontvangers-adressen voor elkaar
+                    zichtbaar worden (in het aan-veld i.p.v. verborgen via BCC).
+                  </span>
+                </span>
+              </label>
             </div>
 
             <h3 className="font-medium text-gray-900 pt-2">SMTP (fallback uitgaande mail)</h3>
