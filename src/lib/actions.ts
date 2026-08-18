@@ -4080,7 +4080,7 @@ export async function getConversieFunnel() {
 
   const [{ data: projecten }, { data: offertes }, { data: facturen }] = await Promise.all([
     sb.from('projecten').select('id, status, created_at').eq('administratie_id', adminId),
-    sb.from('offertes').select('id, status, subtotaal, project_id, versie_nummer, groep_id, created_at, datum').eq('administratie_id', adminId),
+    sb.from('offertes').select('id, status, subtotaal, project_id, versie_nummer, groep_id, created_at, datum, offertenummer').eq('administratie_id', adminId),
     sb.from('facturen').select('id, status, subtotaal, betaald_bedrag, created_at').eq('administratie_id', adminId),
   ])
 
@@ -4088,10 +4088,12 @@ export async function getConversieFunnel() {
   const offertesFiltered = (offertes || []).filter(o => !isImport(o.created_at))
   const facturenFiltered = (facturen || []).filter(f => !isImport(f.created_at))
 
-  // Per groep_id alleen de hoogste versie offerte voor unieke deal-tracking
+  // Per offerte alleen de hoogste versie voor unieke deal-tracking. Sleutel is
+  // het offertenummer (versies delen per definitie hun nummer); groep_id bleek
+  // bij sommige aanmaakroutes leeg te blijven waardoor dezelfde deal dubbel telde.
   const deals = new Map<string, { status: string; subtotaal: number; project_id: string | null; versie: number }>()
   for (const o of offertesFiltered) {
-    const key = o.groep_id || o.id
+    const key = o.offertenummer || o.groep_id || o.id
     const v = o.versie_nummer || 1
     const cur = deals.get(key)
     if (!cur || v > cur.versie) {
@@ -4361,11 +4363,13 @@ export async function getVerwachteOmzetPerMaand(jaar: number) {
       .range(from, to),
   )
 
-  // Laatste versie per groep (datum → versie_nummer → created_at als tiebreakers)
+  // Laatste versie per offerte (datum → versie_nummer → created_at als
+  // tiebreakers). Sleutel is het offertenummer: versies delen per definitie hun
+  // nummer, terwijl groep_id bij sommige aanmaakroutes leeg bleek te blijven.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const perGroep = new Map<string, any>()
   for (const o of offertes) {
-    const key = (o.groep_id as string) || (o.id as string)
+    const key = (o.offertenummer as string) || (o.groep_id as string) || (o.id as string)
     const huidig = perGroep.get(key)
     if (!huidig) { perGroep.set(key, o); continue }
     const da = o.datum ? new Date(o.datum).getTime() : 0
