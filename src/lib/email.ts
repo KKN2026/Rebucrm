@@ -10,6 +10,14 @@ import { getIntegratieInstellingenCached } from '@/lib/admin-context'
 const resendApiKey = process.env.RESEND_API_KEY
 const resend = resendApiKey ? new Resend(resendApiKey) : null
 
+// Maximaal aantal broadcast-ontvangers per mail. Resend telt to+cc+bcc samen
+// en weigert alles boven de 50; naast de BCC-batch gaan ook het afzenderadres
+// (to) en eventueel de universele controle-BCC mee, vandaar 48. Gmail-SMTP
+// trekt de grens in de praktijk rond de 100 — daar blijft de bestaande 90.
+export function maxBroadcastOntvangersPerMail(): number {
+  return resend ? 48 : 90
+}
+
 // SMTP-instellingen: DB-first (per administratie in te stellen via
 // /beheer/email), met de bestaande env-vars als fallback zodra een veld leeg
 // is. De transporter kan daardoor niet meer op module-niveau eenmalig

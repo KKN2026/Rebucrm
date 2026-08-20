@@ -11,7 +11,7 @@ const EIGEN_MAILBOX_EMAILS = new Set<string>([
 ])
 import { revalidatePath } from 'next/cache'
 import { cookies, headers } from 'next/headers'
-import { sendEmail, normaliseerOntvangers } from '@/lib/email'
+import { sendEmail, normaliseerOntvangers, maxBroadcastOntvangersPerMail } from '@/lib/email'
 import { buildRebuEmailHtml, buildFactuurEmailHtml } from '@/lib/email-template'
 import { getAppUrl } from '@/lib/utils'
 import { FACTUUR_OVERRIDE_EMBED, pasFactuurAdresToe } from '@/lib/factuur-adres'
@@ -11769,7 +11769,10 @@ export async function sendBroadcastEmail(onderwerp: string, bericht: string, typ
 
   const emailHtml = buildRebuEmailHtml(bericht)
   const from = process.env.SMTP_FROM || process.env.SMTP_USER || 'Nick@rebukozijnen.nl'
-  const BATCH_SIZE = 90
+  // Batchgrootte hangt af van de verzendlaag: Resend weigert mails met meer
+  // dan 50 ontvangers, waardoor een broadcast naar alle klanten met de oude
+  // vaste 90 op elke batch stukliep ("E-mail verzenden mislukt").
+  const BATCH_SIZE = maxBroadcastOntvangersPerMail()
   // Standaard verstuurt de broadcast alle ontvangers via BCC, zodat klanten
   // elkaars e-mailadres niet zien. Instelbaar via /beheer/email — uitzetten
   // is een bewuste keuze en betekent dat ontvangers-adressen voor elkaar
@@ -11777,7 +11780,7 @@ export async function sendBroadcastEmail(onderwerp: string, bericht: string, typ
   const bccActief = await getBroadcastBccActief(adminId)
 
   try {
-    // Verstuur in batches van 90 (Gmail SMTP limiet)
+    // Verstuur in batches (limiet per transport, zie maxBroadcastOntvangersPerMail)
     for (let i = 0; i < emailAdressen.length; i += BATCH_SIZE) {
       const batch = emailAdressen.slice(i, i + BATCH_SIZE)
       await sendEmail({
