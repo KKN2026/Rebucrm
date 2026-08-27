@@ -44,3 +44,6 @@ yarn-error.log*
 next-env.d.ts
 backups/
 scripts/data/
+
+# Lokale werkbestanden van eenmalige scripts (backups/voortgang)
+scripts/.*.json
