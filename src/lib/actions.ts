@@ -9768,7 +9768,7 @@ export async function getProjectTimeline(projectId: string): Promise<ProjectTime
         ondertitel: f.factuur_type === 'aanbetaling' ? 'Aanbetaling' : f.factuur_type === 'restbetaling' ? 'Restbetaling' : undefined,
         bedrag: (f.subtotaal as number) ?? (f.totaal as number),
         status: fStatus,
-        link: `/facturatie`,
+        link: `/facturatie/${f.id}`,
       })
     }
 
