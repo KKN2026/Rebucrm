@@ -9174,7 +9174,16 @@ export async function convertToFactuur(
       .select('id')
       .single()
 
-    if (err2) return { error: err2.message }
+    if (err2) {
+      // Compenserend opruimen: zonder dit bleef factuur1 (aanbetaling) als
+      // wees achter zonder restbetaling-tegenhanger, zonder dat iemand dit
+      // ooit te zien kreeg — precies het lek dat bij Ben Boendermaker en
+      // minstens 14 andere klanten tot een nooit-gefactureerde 30% leidde.
+      // Nu: of beide facturen bestaan, of geen van beide.
+      await supabase.from('factuur_regels').delete().eq('factuur_id', factuur1.id)
+      await supabase.from('facturen').delete().eq('id', factuur1.id)
+      return { error: `Aanmaken restbetaling mislukt (${err2.message}) — de aanbetaling is teruggedraaid, probeer het opnieuw.` }
+    }
 
     // Link factuur1 terug naar factuur2
     await supabase.from('facturen').update({ gerelateerde_factuur_id: factuur2.id }).eq('id', factuur1.id)
@@ -9250,7 +9259,15 @@ export async function convertToFactuur(
         })
         .select('id')
         .single()
-      if (error || !f) return { error: error?.message || 'Factuur kon niet worden aangemaakt' }
+      if (error || !f) {
+        // Zelfde compensatie als bij 'split': eerder aangemaakte termijnen in
+        // deze reeks terugdraaien zodat nooit een deel van de 3 achterblijft.
+        for (const done of aangemaakt) {
+          await supabase.from('factuur_regels').delete().eq('factuur_id', done.id)
+          await supabase.from('facturen').delete().eq('id', done.id)
+        }
+        return { error: `Factuur aanmaken mislukt (${error?.message || 'onbekende fout'}) — reeds aangemaakte termijnen zijn teruggedraaid, probeer het opnieuw.` }
+      }
       aangemaakt.push(f as { id: string })
 
       await supabase.from('factuur_regels').insert({
